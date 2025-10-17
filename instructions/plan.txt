@@ -1,0 +1,73 @@
+
+**Project Overview – Refined**
+
+We’ll build a **Python 3.12** application managed entirely by **uv** that delivers a full‑stack transcription service:
+
+| Layer | Details |
+|-------|---------|
+| **Frontend** | A **React** single‑page app styled with **Tailwind CSS**. It will provide: <br>•/upload page (JWT protected, file‑upload with 1 GB limit and progress bar) <br>•Dashboard listing recent jobs with real‑time status via WebSocket <br>•Job detail page showing the transcript inline and a download button <br>•Auth flows integrated with **Authentik** (JWT token storage in localStorage, logout) |
+| **Backend** | **FastAPI** powered by uv that: <br>• Accepts file uploads, stores them locally <br>• Inserts a row in a **PostgreSQL** table (async SQLAlchemy) <br>• Triggers a **Temporal** workflow that runs a locally‑hosted **Whisper** model <br>• Updates job status & saves transcript text in the DB <br>• Exposes REST endpoints for upload, job status, transcript download (JWT protected) <br>• Publishes status updates over a WebSocket endpoint for the UI |
+| **Task & Workflow** | **Temporal Python SDK** – a workflow that runs a Whisper transcription activity and updates the DB upon completion |
+| **Local Whisper** | The transcription runs locally (no external Whisper API) using the open‑source Whisper model (e.g., via `whisper` package or `openai-whisper`) |
+| **Deployment** | Dockerfile + docker‑compose for local stack: PostgreSQL, Temporal, Authentik, and the FastAPI + React frontend (serving via a single container or separate; we’ll expose the React build via FastAPI’s static route) |
+| **CI** | GitHub Actions to lint, run tests, and build Docker images |
+| **Security** | JWT token authentication (injected by Authentik), HTTPS recommended in production, file size limits, virus scanning optional |
+| **Scalability** | Max upload size 1 GB, asynchronous processing, WebSocket for real‑time updates, support for more workers via Temporal. |
+
+---
+
+## High‑Level Plan
+
+1. **Project Scaffold**  
+   1.1 `uv init` with `pyproject.toml` (uv + dependencies).  
+   1.2 Dockerfile & docker‑compose files.
+
+2. **Database Layer**  
+   2.1 Async SQLAlchemy models (`Job`, `User` optional).  
+   2.2 Alembic migrations set‑up via uv.
+
+3. **FastAPI App**  
+   3.1 File‑upload endpoint (`POST /upload`).  
+   3.2 Job status & transcript endpoints (`GET /jobs/{id}`; `GET /jobs/{id}/download`).  
+   3.3 WebSocket endpoint for live job status updates.  
+   3.4 JWT auth middleware (extract from `Authorization: Bearer …`).  
+   3.5 Static / React build serving.
+
+4. **Temporal Workflow & Activities**  
+   4.1 Define a `TranscribeWorkflow` that launches a `TranscribeActivity` with the file path.  
+   4.2 Whisper activity code (load model, run `transcribe`).  
+   4.3 Update database entry on success/failure.
+
+5. **Whisper Integration**  
+   5.1 Use `openai-whisper` or `whisper` package.  
+   5.2 Use GPU if available, else CPU.
+
+6. **UI Frontend**  
+   6.1 Create React project (Vite + Tailwind CSS).  
+   6.2 Build components: Upload, Dashboard, JobDetail.  
+   6.3 WebSocket client for real‑time updates.  
+   6.4 JWT handling (login button triggers Authentik redirect, token stored in localStorage).  
+   6.5 Branding assets integration.
+
+7. **Docker & Compose**  
+   7.1 Service `app` (FastAPI + static React).  
+   7.2 Service `db` (PostgreSQL).  
+   7.3 Service `temporal` (Temporal server).  
+   7.4 Service `authentik` (quick Authentik instance).  
+   7.5 Volumes for persisted DB, uploads, etc.
+
+8. **Testing**  
+   8.1 Unit tests for FastAPI routes, SQLAlchemy models.  
+   8.2 Integration tests for Temporal workflow.  
+   8.3 Frontend tests (React + Jest + React Testing Library, optional).
+
+9. **CI Pipeline**  
+   9.1 Lint (ruff).  
+   9.2 Tests.  
+   9.3 Build Docker image.  
+   9.4 Permissions (GitHub secret).
+
+---
+
+**Please review the updated project overview and high‑level plan.**  
+Let me know if anything should be added, changed, or removed before we move to the file‑level breakdown.

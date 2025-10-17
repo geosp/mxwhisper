@@ -1,0 +1,56 @@
+services:
+  # MxWhisper API Server
+  # Required environment variables:
+  # - DATABASE_URL: PostgreSQL connection string
+  # - TEMPORAL_HOST: Temporal server endpoint
+  # - UPLOAD_DIR: Directory for file uploads
+  # - MAX_FILE_SIZE: Maximum allowed file size in bytes
+  # - AUTHENTIK_SERVER_URL: Authentik server base URL
+  # - AUTHENTIK_API_URL: Authentik API endpoint
+  # - AUTHENTIK_ADMIN_TOKEN: Admin token for Authentik API
+  # - AUTHENTIK_CLIENT_ID: OAuth client ID
+  # - AUTHENTIK_CLIENT_SECRET: OAuth client secret
+  # - AUTHENTIK_ISSUER_URL: JWT issuer URL
+  # - AUTHENTIK_JWKS_URL: JWKS endpoint for token verification
+  # - AUTHENTIK_EXPECTED_ISSUER: Expected JWT issuer
+  # - AUTHENTIK_EXPECTED_AUDIENCE: Expected JWT audience
+  mxwhisper:
+    image: mxwhisper
+    env_file: ../.env
+    command: ["uv", "run", "mxwhisper", "--host", "0.0.0.0", "--port", "8000"]
+    container_name: mxwhisper
+    ports:
+      - "8000:8000"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - uploads:/app/uploads
+
+  # Temporal Worker for transcription tasks
+  # Required environment variables:
+  # - DATABASE_URL: PostgreSQL connection string
+  # - TEMPORAL_HOST: Temporal server endpoint
+  # - UPLOAD_DIR: Directory for file uploads
+  # - MAX_FILE_SIZE: Maximum allowed file size in bytes
+  mxwhisper-worker:
+    image: mxwhisper
+    command: ["uv", "run", "mxwhisper-worker"]
+    env_file: ../.env
+    container_name: mxwhisper-worker
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+    volumes:
+      - uploads:/app/uploads
+
+volumes:
+  uploads:
