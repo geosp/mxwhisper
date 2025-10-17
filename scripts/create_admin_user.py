@@ -28,7 +28,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import select
 
 from app.data.models import User, Role
-from app.services import JobService
+from app.services import UserService
 
 # Load environment variables
 load_dotenv()
@@ -50,7 +50,7 @@ async def create_admin_user():
         async with async_session() as session:
             # Ensure roles exist
             print("📋 Ensuring roles are initialized...")
-            await JobService.initialize_roles(session)
+            await UserService.initialize_roles(session)
 
             # Check if admin user already exists
             admin_user_id = '550e8400-e29b-41d4-a716-446655440000'  # UUID format for admin.mxwhisper
@@ -75,8 +75,8 @@ async def create_admin_user():
             print("👤 Creating admin.mxwhisper user...")
             admin_user = User(
                 id=admin_user_id,
-                email='admin@mxwhisper.com',
-                name='MxWhisper Admin',
+                email='admin.mxwhisper@mixwarecs-home.net',
+                name='mxWhisper Admin',
                 preferred_username='admin.mxwhisper',
                 role_id=admin_role.id
             )

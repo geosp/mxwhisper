@@ -34,7 +34,6 @@ Examples:
 
 import asyncio
 import argparse
-import os
 import sys
 from pathlib import Path
 
@@ -44,11 +43,9 @@ sys.path.insert(0, str(project_root))
 
 from dotenv import load_dotenv
 from app.auth import authentik_client
-from app.services.user_service import create_user_in_authentik_and_db, UserService
+from app.services.user_service import UserService
 from app.auth.jwt import create_access_token
 from app.data import async_session, get_db_session
-from sqlalchemy import select
-from sqlalchemy.orm import joinedload
 
 # Load environment variables
 load_dotenv()
