@@ -3,6 +3,7 @@ import logging
 import tqdm
 from temporalio import activity
 
+from app.config import settings
 from app.data import Job, get_db_session
 from app.services.websocket_manager import send_job_update
 
@@ -67,8 +68,9 @@ def get_whisper_model():
     """Lazy load the Whisper model."""
     global model
     if model is None:
-        logger.info("Loading Whisper model", extra={"model": "base"})
-        model = whisper.load_model("base")
+        model_size = settings.whisper_model_size
+        logger.info("Loading Whisper model", extra={"model": model_size})
+        model = whisper.load_model(model_size)
         logger.info("Whisper model loaded successfully")
     return model
 

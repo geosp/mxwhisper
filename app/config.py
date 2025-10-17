@@ -6,7 +6,10 @@ class Settings(BaseSettings):
     temporal_host: str = "localhost:7233"
     upload_dir: str = "uploads"
     max_file_size: int = 1 * 1024 * 1024 * 1024  # 1GB
-    
+
+    # Whisper Configuration
+    whisper_model_size: str = "base"  # Options: tiny, base, small, medium, large
+
     # Authentik Configuration
     authentik_server_url: str = ""
     authentik_client_id: str = ""
@@ -26,5 +29,6 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = False
+        extra = "ignore"  # Ignore extra fields in .env that aren't defined in Settings
 
 settings = Settings()

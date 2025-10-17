@@ -26,10 +26,27 @@ The application follows a modular architecture with separated concerns:
    cp config/.env.example .env
    ```
 
-3. Build and run with Docker:
+3. Configure Whisper model (optional):
+
+   Edit `.env` and set the desired model size:
    ```bash
-   # Build the Docker image
+   WHISPER_MODEL_SIZE=base  # Options: tiny, base, small, medium, large
+   ```
+
+   **Model size comparison:**
+   - `tiny` (~40MB): Fastest, lowest accuracy - good for testing
+   - `base` (~140MB): **Default** - balanced speed and accuracy
+   - `small` (~480MB): Better accuracy, slower
+   - `medium` (~1.5GB): High accuracy, requires more VRAM
+   - `large` (~3GB): Best accuracy, slowest, highest VRAM requirement
+
+4. Build and run with Docker:
+   ```bash
+   # Build with default model (base)
    ./build-image.sh
+
+   # Build with a specific model (e.g., medium)
+   docker build -f docker/Dockerfile --build-arg WHISPER_MODEL_SIZE=medium -t mxwhisper:latest .
 
    # Start the services
    ./deploy.sh
@@ -52,6 +69,8 @@ The application follows a modular architecture with separated concerns:
    # Build without cache
    ./build-image.sh --no-cache
    ```
+
+   **Note:** The Whisper model is preloaded during Docker build, so the first transcription will start immediately without downloading the model.
 
 ## API Endpoints
 

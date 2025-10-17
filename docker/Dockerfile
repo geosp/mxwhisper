@@ -36,6 +36,10 @@ USER mxwhisper
 RUN uv sync --no-dev
 RUN uv pip install -e .
 
+# Preload Whisper model during build (configurable via build arg)
+ARG WHISPER_MODEL_SIZE=medium
+RUN uv run python -c "import whisper; whisper.load_model('${WHISPER_MODEL_SIZE}')"
+
 # Create uploads directory
 RUN mkdir -p /app/uploads
 
