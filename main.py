@@ -11,6 +11,7 @@ from app.config import settings
 from app.logging_config import setup_logging
 from app.services import JobService, UserService, create_user_in_authentik_and_db, update_user, delete_user
 from app.services.websocket_manager import active_connections, send_job_update
+from app.services.embedding_service import generate_embedding
 
 # Setup logging
 setup_logging(level="INFO", format_type="text", log_file="logs/mxwhisper.log")
@@ -30,6 +31,10 @@ class UpdateUserRequest(BaseModel):
     name: Optional[str] = None
     preferred_username: Optional[str] = None
     role: Optional[str] = None
+
+class SearchRequest(BaseModel):
+    query: str
+    limit: int = 10
 
 app = FastAPI(title="MxWhisper API")
 
@@ -152,7 +157,7 @@ async def get_user_jobs(db: AsyncSession = Depends(get_db), token_payload: dict 
     user_id = token_payload.get("sub")
     if not user_id:
         raise HTTPException(status_code=401, detail="Invalid user token")
-    
+
     jobs = await JobService.get_user_jobs(db, user_id)
     return [
         {
@@ -164,6 +169,108 @@ async def get_user_jobs(db: AsyncSession = Depends(get_db), token_payload: dict 
         }
         for job in jobs
     ]
+
+@app.post("/search")
+async def semantic_search(
+    search_request: SearchRequest,
+    db: AsyncSession = Depends(get_db),
+    token_payload: dict = Depends(verify_token)
+):
+    """
+    Semantic search across transcript chunks using vector similarity.
+
+    This endpoint searches semantically meaningful chunks of transcripts,
+    providing precise matches with topic summaries and timestamps.
+
+    Benefits of chunk-based search:
+    - More relevant results (searches individual topics, not entire transcripts)
+    - Navigate directly to the relevant part of the audio
+    - See what each chunk is about via topic summaries
+
+    Example queries:
+    - Query: "biblical teachings" will find chunks specifically about the Bible
+    - Query: "Jesus Christ" will find chunks discussing Jesus
+    - Query: "God's anointed one" will find chunks about the Messiah
+    """
+    user_id = token_payload.get("sub")
+    if not user_id:
+        raise HTTPException(status_code=401, detail="Invalid user token")
+
+    logger.info("Semantic search request", extra={
+        "user_id": user_id,
+        "query": search_request.query,
+        "limit": search_request.limit
+    })
+
+    # Generate embedding for the search query
+    query_embedding = generate_embedding(search_request.query)
+
+    # Perform vector similarity search on chunks
+    # Using cosine distance (1 - cosine similarity)
+    from sqlalchemy import select, text
+
+    query = text("""
+        SELECT
+            job_chunks.id as chunk_id,
+            job_chunks.job_id,
+            job_chunks.chunk_index,
+            job_chunks.text as matched_text,
+            job_chunks.topic_summary,
+            job_chunks.keywords,
+            job_chunks.start_time,
+            job_chunks.end_time,
+            jobs.filename,
+            jobs.created_at,
+            (1 - (job_chunks.embedding <=> :query_embedding)) as similarity
+        FROM job_chunks
+        JOIN jobs ON job_chunks.job_id = jobs.id
+        WHERE
+            jobs.status = 'completed'
+            AND job_chunks.embedding IS NOT NULL
+            AND jobs.user_id = :user_id
+        ORDER BY job_chunks.embedding <=> :query_embedding
+        LIMIT :limit
+    """)
+
+    result = await db.execute(
+        query,
+        {
+            "query_embedding": str(query_embedding),
+            "user_id": user_id,
+            "limit": search_request.limit
+        }
+    )
+
+    results = []
+    for row in result:
+        # Build result with chunk text, topic summary, and timestamp
+        result_item = {
+            "chunk_id": row.chunk_id,
+            "job_id": row.job_id,
+            "chunk_index": row.chunk_index,
+            "filename": row.filename,
+            "matched_text": row.matched_text,
+            "topic_summary": row.topic_summary,
+            "keywords": row.keywords,
+            "timestamp": {
+                "start": row.start_time,
+                "end": row.end_time
+            } if row.start_time is not None and row.end_time is not None else None,
+            "similarity": float(row.similarity),
+            "created_at": row.created_at,
+        }
+        results.append(result_item)
+
+    logger.info("Semantic search completed", extra={
+        "user_id": user_id,
+        "query": search_request.query,
+        "results_count": len(results)
+    })
+
+    return {
+        "query": search_request.query,
+        "results": results
+    }
 
 @app.get("/admin/jobs")
 async def get_all_jobs(db: AsyncSession = Depends(get_db), token_payload: dict = Depends(verify_token)):

@@ -1,6 +1,6 @@
 # MxWhisper
 
-A full-stack transcription service using FastAPI, Temporal, and Whisper.
+A full-stack transcription service with AI-powered semantic search using FastAPI, Temporal, Whisper, and pgvector.
 
 ## Architecture
 
@@ -10,7 +10,8 @@ The application follows a modular architecture with separated concerns:
 - **Services Layer** (`app/services/`): Business logic separated by domain
   - `user_service.py`: User management, authentication, and role handling
   - `job_service.py`: Job management and workflow orchestration
-- **Data Layer** (`app/database.py`): SQLAlchemy models and database connections
+  - `embedding_service.py`: AI-powered semantic embeddings for search
+- **Data Layer** (`app/database.py`): SQLAlchemy models with pgvector support for semantic search
 - **Workflow Layer** (`app/workflows/`): Temporal workflow definitions and activities
 - **Configuration** (`app/config.py`, `app/logging_config.py`): Application settings and logging
 
@@ -81,12 +82,80 @@ All endpoints except WebSocket require JWT authentication via `Authorization: Be
 - `GET /jobs/{id}` - Get job status (requires auth)
 - `GET /jobs/{id}/download` - Download completed transcript (requires auth)
 - `GET /user/jobs` - Get all jobs for authenticated user (requires auth)
+- `POST /search` - Semantic search across transcripts (requires auth)
 
 ### Admin Endpoints (Admin role required)
 - `GET /admin/jobs` - Get all jobs across all users (admin only)
 - `GET /admin/users` - Get all users and their roles (admin only)
 
+### Real-time Updates
 - `WebSocket /ws/jobs/{id}` - Real-time job status updates (no auth required)
+
+## Semantic Search
+
+MxWhisper includes AI-powered semantic search that allows you to find transcripts by **meaning**, not just exact keywords.
+
+### How It Works
+
+1. **Audio Transcription**: Whisper converts audio to text
+2. **Embedding Generation**: Text is converted to 384-dimensional vectors using sentence-transformers (`all-MiniLM-L6-v2` model)
+3. **Vector Storage**: Embeddings are stored in PostgreSQL with pgvector extension
+4. **Similarity Search**: HNSW index enables fast approximate nearest neighbor search using cosine similarity
+
+### Features
+
+- **Semantic Understanding**: Search "biblical teachings" to find "scripture", "gospel", "Christ"
+- **Fast & Scalable**: HNSW indexing for O(log n) search performance
+- **Privacy-First**: All processing happens locally - no external API calls
+- **User-Scoped**: Each user only searches their own transcripts
+
+### API Usage
+
+**Request:**
+```bash
+curl -X POST "http://localhost:8000/search" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "query": "biblical teachings about the Messiah",
+    "limit": 10
+  }'
+```
+
+**Response:**
+```json
+{
+  "query": "biblical teachings about the Messiah",
+  "results": [
+    {
+      "job_id": 15,
+      "filename": "sermon.mp3",
+      "preview": "The Bible also calls Him the Christ, the Greek word for Messiah, which means God's anointed one...",
+      "similarity": 0.89,
+      "created_at": "2025-10-17T10:30:00"
+    }
+  ]
+}
+```
+
+### Search Examples
+
+**Traditional Keyword Search** (limited):
+- Query: "God's anointed" → Only finds exact matches
+
+**Semantic Search** (intelligent):
+- Query: "God's anointed" → Finds "Messiah", "Christ", "Jesus"
+- Query: "love and compassion" → Finds "mercy and kindness"
+- Query: "ancient scriptures" → Finds "biblical texts", "holy writings"
+- Query: "spiritual leader" → Finds "pastor", "minister", "priest"
+
+### Technical Details
+
+- **Model**: `all-MiniLM-L6-v2` (80MB, runs on CPU, very fast)
+- **Vector Dimensions**: 384 (optimal balance of speed/accuracy)
+- **Distance Metric**: Cosine similarity (best for semantic search)
+- **Index Type**: HNSW (Hierarchical Navigable Small World)
+- **PostgreSQL Extension**: pgvector 0.8.1+
 
 ## Development
 
@@ -129,11 +198,63 @@ For development without Docker, ensure PostgreSQL is running locally and update 
 
 ## Database Setup
 
+### Requirements
+
+- **PostgreSQL 15+** with **pgvector extension** installed
+- For semantic search to work, the pgvector extension must be available
+
+### PostgreSQL with pgvector
+
+**For Kubernetes Deployments:**
+
+Use the official pgvector PostgreSQL image in your deployment:
+```yaml
+postgresql_image: "pgvector/pgvector:pg15"
+```
+
+Then enable the extension on your database:
+```bash
+# Enable pgvector extension (requires superuser privileges)
+kubectl exec -n databases postgresql-primary-0 -- \
+  psql -U postgres -d mxwhisper -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+# Verify installation
+kubectl exec -n databases postgresql-primary-0 -- \
+  psql -U postgres -d mxwhisper -c "\dx vector"
+```
+
+**For Docker/Local Development:**
+
+If using standard PostgreSQL, install pgvector:
+```bash
+# Ubuntu/Debian
+sudo apt install postgresql-15-pgvector
+
+# Then in psql:
+CREATE EXTENSION IF NOT EXISTS vector;
+```
+
+Or use the Docker image:
+```yaml
+# docker-compose.yml
+services:
+  db:
+    image: pgvector/pgvector:pg15
+```
+
+### Running Migrations
+
 1. **Ensure PostgreSQL database exists** with the credentials in your `.env` file
-2. **Run migrations** to create tables:
+2. **Ensure pgvector extension is enabled** (see above)
+3. **Run migrations** to create tables and vector columns:
    ```bash
-   uv run alembic upgrade head
+   uv run alembic -c config/alembic.ini upgrade head
    ```
+
+This will create:
+- Database tables (jobs, users, roles)
+- Vector column for embeddings (384 dimensions)
+- HNSW index for fast similarity search
 
 ## Authentication
 

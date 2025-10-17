@@ -18,6 +18,10 @@ if config.config_file_name is not None:
 # add your model's MetaData object here
 # for 'autogenerate' support
 from app.data.models import Base
+from app.config import settings
+
+# Override the sqlalchemy.url from the ini file with the one from app settings
+config.set_main_option("sqlalchemy.url", settings.database_url)
 
 target_metadata = Base.metadata
 
@@ -25,6 +29,14 @@ target_metadata = Base.metadata
 # can be acquired:
 # my_important_option = config.get_main_option("my_important_option")
 # ... etc.
+
+
+def do_run_migrations(connection):
+    """Run migrations with the given connection."""
+    context.configure(connection=connection, target_metadata=target_metadata)
+
+    with context.begin_transaction():
+        context.run_migrations()
 
 
 def run_migrations_offline() -> None:
@@ -59,11 +71,7 @@ async def run_migrations_online_async() -> None:
     )
 
     async with connectable.connect() as connection:
-        await connection.run_sync(
-            lambda conn: context.configure(
-                connection=conn, target_metadata=target_metadata
-            ).run_migrations()
-        )
+        await connection.run_sync(do_run_migrations)
 
 
 def run_migrations_online() -> None:

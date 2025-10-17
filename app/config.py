@@ -10,6 +10,27 @@ class Settings(BaseSettings):
     # Whisper Configuration
     whisper_model_size: str = "base"  # Options: tiny, base, small, medium, large
 
+    # Semantic Chunking Configuration
+    enable_semantic_chunking: bool = True
+    chunking_strategy: str = "ollama"  # Options: ollama, sentence, simple
+
+    # Ollama Configuration
+    ollama_base_url: str = "http://ollamas.mixwarecs-home.net"
+    ollama_model: str = "gpt-oss:20b"
+    ollama_timeout: int = 300  # seconds (total timeout) - increased from 120
+    ollama_max_retries: int = 3
+    ollama_connect_timeout: int = 60  # seconds - increased from 30
+    ollama_read_timeout: int = 240  # seconds - increased from 90
+
+    # Chunk Settings
+    chunk_min_tokens: int = 200
+    chunk_max_tokens: int = 500
+    chunk_overlap_tokens: int = 50
+
+    # Heartbeat Settings (for Temporal activities)
+    activity_heartbeat_interval: int = 5  # seconds between automatic heartbeats
+    activity_heartbeat_timeout: int = 300  # 5 minutes - max time without heartbeat
+
     # Authentik Configuration
     authentik_server_url: str = ""
     authentik_client_id: str = ""
@@ -22,7 +43,7 @@ class Settings(BaseSettings):
     # Authentik API Configuration (for admin operations)
     authentik_api_url: str = ""
     authentik_admin_token: str = ""  # Admin token for API access
-    
+
     # Test token for API verification
     test_token: str = ""
 

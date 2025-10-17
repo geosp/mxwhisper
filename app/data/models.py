@@ -1,10 +1,11 @@
 """
 SQLAlchemy models for MxWhisper
 """
-from typing import Optional
+from typing import Optional, List
 
-from sqlalchemy import DateTime, String, Text, func, ForeignKey
+from sqlalchemy import DateTime, String, Text, func, ForeignKey, Float, Integer, ARRAY
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
+from pgvector.sqlalchemy import Vector
 
 
 class Base(DeclarativeBase):
@@ -43,7 +44,29 @@ class Job(Base):
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, processing, completed, failed
     transcript: Mapped[Optional[Text]] = mapped_column(Text, nullable=True)
     segments: Mapped[Optional[Text]] = mapped_column(Text, nullable=True)  # JSON string of segments with timestamps
+    embedding: Mapped[Optional[Vector]] = mapped_column(Vector(384), nullable=True)  # Semantic embedding for search (384-dim) - deprecated, use chunks
     created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship()
+    chunks: Mapped[List["JobChunk"]] = relationship(back_populates="job", cascade="all, delete-orphan")
+
+
+class JobChunk(Base):
+    __tablename__ = "job_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+    topic_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    keywords: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
+    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
+    start_char_pos: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    end_char_pos: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
+    embedding: Mapped[Optional[Vector]] = mapped_column(Vector(384), nullable=True)
+    created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
+
+    job: Mapped["Job"] = relationship(back_populates="chunks")

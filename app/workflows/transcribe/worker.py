@@ -9,7 +9,11 @@ from temporalio.worker import Worker
 
 from app.config import settings
 from app.logging_config import setup_logging
-from app.workflows.transcribe.activity import transcribe_activity
+from app.workflows.transcribe.activities import (
+    transcribe_activity,
+    chunk_with_ollama_activity,
+    embed_chunks_activity,
+)
 from app.workflows.transcribe.workflow import TranscribeWorkflow
 
 # Setup logging
@@ -31,7 +35,11 @@ async def run_worker():
         client,
         task_queue="transcribe",
         workflows=[TranscribeWorkflow],
-        activities=[transcribe_activity],
+        activities=[
+            transcribe_activity,
+            chunk_with_ollama_activity,
+            embed_chunks_activity,
+        ],
     )
 
     logger.info("Worker started! Listening for transcription tasks...")
