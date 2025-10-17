@@ -12,15 +12,21 @@ logger = logging.getLogger(__name__)
 @workflow.defn
 class TranscribeWorkflow:
     @workflow.run
-    async def run(self, job_id: int) -> None:
+    async def run(self, job_id: int) -> dict:
+        """
+        Run transcription workflow.
+
+        Returns:
+            dict: Summary of transcription results (not the full transcript)
+        """
         logger.info("Starting transcription workflow", extra={
             "job_id": job_id,
             "workflow_id": workflow.info().workflow_id,
             "run_id": workflow.info().run_id
         })
-        
+
         try:
-            await workflow.execute_activity(
+            summary = await workflow.execute_activity(
                 "transcribe_activity",  # Use string name instead of imported function
                 job_id,
                 start_to_close_timeout=timedelta(hours=1),
@@ -28,8 +34,10 @@ class TranscribeWorkflow:
             )
             logger.info("Transcription workflow completed successfully", extra={
                 "job_id": job_id,
-                "workflow_id": workflow.info().workflow_id
+                "workflow_id": workflow.info().workflow_id,
+                "summary": summary
             })
+            return summary
         except Exception as e:
             logger.error("Transcription workflow failed", extra={
                 "job_id": job_id,

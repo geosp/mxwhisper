@@ -1,6 +1,7 @@
 import whisper
 import logging
 import tqdm
+from dataclasses import dataclass
 from temporalio import activity
 
 from app.config import settings
@@ -8,6 +9,16 @@ from app.data import Job, get_db_session
 from app.services.websocket_manager import send_job_update
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class TranscriptionSummary:
+    """Lightweight summary of transcription results to avoid Temporal event history bloat."""
+    job_id: int
+    success: bool
+    segment_count: int
+    character_count: int
+    language: str | None
+    duration: float | None
 
 # Model will be loaded lazily
 model = None
@@ -75,7 +86,7 @@ def get_whisper_model():
     return model
 
 @activity.defn
-async def transcribe_activity(job_id: int) -> None:
+async def transcribe_activity(job_id: int) -> TranscriptionSummary:
     logger.info("Starting transcription activity", extra={"job_id": job_id})
     
     session = await get_db_session()
@@ -129,19 +140,31 @@ async def transcribe_activity(job_id: int) -> None:
             job.transcript = result["text"]
             # Store segments data as JSON for SRT generation
             import json
-            job.segments = json.dumps(result.get("segments", []))
+            segments = result.get("segments", [])
+            job.segments = json.dumps(segments)
             job.status = "completed"
-            
+
+            # Create lightweight summary for Temporal return value
+            summary = TranscriptionSummary(
+                job_id=job.id,
+                success=True,
+                segment_count=len(segments),
+                character_count=len(result["text"]),
+                language=result.get("language"),
+                duration=segments[-1]["end"] if segments else None
+            )
+
             logger.info("Transcription completed successfully", extra={
                 "job_id": job.id,
                 "transcript_length": len(result["text"]),
+                "segment_count": summary.segment_count,
                 "status": job.status
             })
-            
+
             # Send completion update with transcript
             await send_job_update(job.id, "completed", transcript=result["text"], progress=100)
-            
-            return result["text"]
+
+            return summary
             
         except Exception as e:
             logger.error("Transcription failed", extra={
