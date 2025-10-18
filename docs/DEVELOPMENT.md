@@ -192,72 +192,7 @@ docker-compose -f docker/docker-compose.yml up --build mxwhisper-api
 
 ## Project Structure
 
-```
-mxwhisper/
-├── app/
-│   ├── auth/                     # Authentication & JWT
-│   │   ├── __init__.py
-│   │   └── jwt.py                # JWT verification logic
-│   ├── data/                     # Database layer
-│   │   ├── __init__.py
-│   │   ├── database.py           # DB session management
-│   │   └── models.py             # SQLAlchemy models
-│   ├── services/                 # Business logic
-│   │   ├── __init__.py
-│   │   ├── job_service.py        # Job management
-│   │   ├── user_service.py       # User management
-│   │   ├── embedding_service.py  # Embedding generation
-│   │   └── websocket_manager.py  # WebSocket connections
-│   ├── workflows/                # Temporal workflows
-│   │   └── transcribe/
-│   │       ├── __init__.py
-│   │       ├── workflow.py       # Main workflow
-│   │       ├── worker.py         # Worker process
-│   │       ├── activities/       # Workflow activities
-│   │       │   ├── __init__.py
-│   │       │   ├── transcribe.py # Whisper activity
-│   │       │   ├── chunk.py      # Chunking activity
-│   │       │   ├── embed.py      # Embedding activity
-│   │       │   └── models.py     # Activity data models
-│   │       ├── services/         # AI service wrappers
-│   │       │   ├── __init__.py
-│   │       │   ├── whisper_service.py
-│   │       │   └── ollama_service.py
-│   │       └── utils/            # Utilities
-│   │           ├── __init__.py
-│   │           └── heartbeat.py  # Progress tracking
-│   ├── config.py                 # Configuration
-│   ├── logging_config.py         # Logging setup
-│   └── cli.py                    # CLI entry point
-├── main.py                       # FastAPI application
-├── alembic/                      # Database migrations
-│   ├── env.py
-│   ├── script.py.mako
-│   └── versions/                 # Migration scripts
-├── docker/                       # Docker files
-│   ├── Dockerfile
-│   ├── docker-compose.yml
-│   └── verify/                   # Verification scripts
-├── tests/                        # Test suite
-│   ├── __init__.py
-│   ├── conftest.py               # Pytest fixtures
-│   ├── test_upload.py
-│   ├── test_admin_api.py
-│   ├── test_temporal.py
-│   └── ...
-├── scripts/                      # Utility scripts
-│   ├── create_admin_user.py
-│   └── generate_token.py
-├── config/                       # Configuration templates
-│   └── .env.example
-├── docs/                         # Documentation
-│   ├── ARCHITECTURE.md
-│   ├── API.md
-│   └── DEVELOPMENT.md
-├── pyproject.toml                # Python package definition
-├── README.md
-└── .gitignore
-```
+For detailed directory structure and organization principles, see [ARCHITECTURE.md](ARCHITECTURE.md#directory-structure).
 
 ## Database Management
 
@@ -987,6 +922,90 @@ stats.print_stats(20)  # Top 20 slowest
 10. **Keep dependencies up to date**
 
 ---
+
+## Admin User Setup
+
+### Manual Authentik Group Configuration
+
+**You need to do this manually in the Authentik web UI:**
+
+1. **Log into Authentik Admin**: `http://authentik.yourdomain.net/if/admin/`
+2. **Create Admin Group**:
+   - Directory → Groups → Create
+   - Name: `admin.mxwhisper` (recommended for consistency)
+   - Add users who should have admin access
+3. **Add Admin Users**:
+   - Directory → Users → Select user → Groups tab → Add to admin group
+4. **Test JWT Token**:
+   - Login with admin user
+   - JWT should contain: `"groups": ["admin", ...]`
+
+### Setting Up a Specific Admin User
+
+For better organization, create a dedicated admin user in Authentik:
+
+1. **Create User in Authentik**:
+   - Directory → Users → Create
+   - Username: `admin.mxwhisper` (or your preferred naming)
+   - Email: `admin@yourdomain.com`
+   - Set a strong password
+
+2. **Add to Admin Group**:
+   - Select the user → Groups tab
+   - Add to the `admin` group you created earlier
+
+3. **Test Admin Access**:
+   - Login as `admin.mxwhisper`
+   - JWT token will include `"groups": ["admin", ...]`
+   - Access admin endpoints: `/admin/users`, `/admin/jobs`
+
+### Why Not Create Default Admin Users?
+
+**Security Best Practice**: The application does NOT create default admin users because:
+
+- ❌ **Security Risk**: Predefined admin accounts are common attack targets
+- ❌ **No Password Management**: Authentik handles passwords, not the app
+- ✅ **Group-Based Access**: Admin access via Authentik groups is more secure
+- ✅ **Flexible**: Multiple users can be admins by adding them to the group
+
+### Testing Admin Functionality
+
+Run the test script to verify role assignment:
+
+```bash
+uv run python tests/test_admin_setup.py
+```
+
+This will:
+- ✅ Test role initialization
+- ✅ Test user creation with different group memberships
+- ✅ Show mock JWT tokens for testing
+- ✅ Provide detailed Authentik setup instructions
+
+### Manual API Testing
+
+After setting up Authentik groups:
+
+```bash
+# Start the server
+uv run mxwhisper --reload --port 8000
+
+# Test admin endpoints with real JWT tokens from Authentik
+curl -H "Authorization: Bearer <admin-jwt-token>" http://localhost:8000/admin/jobs
+curl -H "Authorization: Bearer <admin-jwt-token>" http://localhost:8000/admin/users
+
+# Test regular user access (should fail with 403)
+curl -H "Authorization: Bearer <regular-jwt-token>" http://localhost:8000/admin/users
+```
+
+### Alternative Group Names
+
+The app recognizes these group names as admin:
+- `admin.mxwhisper` (recommended)
+- `mxwhisper-admin`
+- `admin`
+- `administrators`
+- `Admins`
 
 ## Additional Resources
 

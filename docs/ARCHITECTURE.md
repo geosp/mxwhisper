@@ -772,6 +772,140 @@ docker-compose up --scale mxwhisper-worker=5
 8. **Rate Limiting**: Prevent abuse
 9. **Health Checks**: `/health` endpoint for load balancers
 
+## Technology Stack
+
+The following table lists all technologies used in MxWhisper with version requirements and justifications:
+
+| Category | Technology | Version | Purpose | Justification |
+|----------|-----------|---------|---------|---------------|
+| **Language** | Python | 3.11+ | Application runtime | Modern async features, type hints, performance |
+| **API Framework** | FastAPI | 0.119.0+ | REST API and WebSocket endpoints | Auto OpenAPI docs, async support, Pydantic validation |
+| **Database** | PostgreSQL | 15+ | Primary data store | ACID compliance, robust indexing, mature ecosystem |
+| **Vector DB** | pgvector | 0.3.6+ | Vector similarity search extension | Native PostgreSQL integration, HNSW index support |
+| **ORM** | SQLAlchemy | 2.0.44+ | Database ORM with async support | Industry standard, async engine, type safety |
+| **DB Driver** | AsyncPG | 0.30.0+ | Async PostgreSQL driver | High performance, full async/await support |
+| **Workflow Engine** | Temporalio | 1.18.1+ | Distributed workflow orchestration | Durable execution, automatic retries, observability |
+| **Auth** | Authentik | - | OAuth2/OIDC authentication | Self-hosted identity provider, RBAC support |
+| **JWT** | Python-Jose | 3.5.0+ | JWT token handling | JWKS support, RS256 verification |
+| **AI - Transcription** | OpenAI Whisper | 20250625 | Speech-to-text conversion | State-of-the-art accuracy, multilingual |
+| **AI - Chunking** | vLLM / Ollama | - | LLM inference (Llama 3.1-8B) | Fast inference, semantic understanding |
+| **AI - Embeddings** | SentenceTransformers | 3.3.1 | Text embedding generation | Easy to use, CPU-friendly models |
+| **Embedding Model** | all-MiniLM-L6-v2 | - | 384-dim semantic vectors | Small size (80MB), fast, good accuracy |
+| **Web Server** | Uvicorn | 0.37.0+ | ASGI server | High performance, graceful shutdown |
+| **Migrations** | Alembic | 1.17.0+ | Database schema migrations | SQLAlchemy integration, version control |
+| **HTTP Client** | HTTPX | 0.28.1+ | Async HTTP client | Async/await, timeout control, retries |
+| **Logging** | Python Logging | stdlib | Structured logging | Standard library, rotating file handler |
+| **Package Manager** | uv | latest | Fast Python package manager | 10-100x faster than pip, lockfile support |
+| **Container Runtime** | Docker | 20.10+ | Containerization | Reproducible builds, easy deployment |
+| **GPU Support** | NVIDIA CUDA | 12.4 | GPU acceleration for AI models | Faster Whisper inference, LLM acceleration |
+
+### Why These Technologies?
+
+**PostgreSQL + pgvector:**
+- Single database for both relational and vector data
+- No need for separate vector database (Pinecone, Weaviate)
+- HNSW index provides fast approximate nearest neighbor search
+- Reduces operational complexity
+
+**Temporal Workflows:**
+- Survives process crashes and restarts
+- Built-in retry logic with exponential backoff
+- Full execution history for debugging
+- Heartbeat mechanism for long-running tasks
+- Alternative to manual job queues (Celery, RQ)
+
+**FastAPI:**
+- Automatic OpenAPI documentation
+- Type safety with Pydantic models
+- Native async/await support
+- Fast development with fewer bugs
+
+**SentenceTransformers (CPU-based embeddings):**
+- No GPU required for embeddings
+- Fast inference (<10ms per sentence)
+- Good enough accuracy for most use cases
+- Allows GPU to be dedicated to Whisper
+
+## Directory Structure
+
+```
+mxwhisper/
+├── app/                          # Main application package
+│   ├── auth/                     # Authentication & JWT verification
+│   │   ├── __init__.py
+│   │   └── jwt.py               # JWT token verification logic
+│   ├── data/                     # Database layer
+│   │   ├── __init__.py
+│   │   ├── models.py            # SQLAlchemy models (User, Job, JobChunk, Role)
+│   │   └── database.py          # DB session management & engine config
+│   ├── services/                 # Business logic layer (service-oriented)
+│   │   ├── __init__.py
+│   │   ├── job_service.py       # Job lifecycle management
+│   │   ├── user_service.py      # User & role management
+│   │   ├── embedding_service.py # Vector embedding generation
+│   │   └── websocket_manager.py # Real-time client notifications
+│   ├── workflows/                # Temporal workflows & activities
+│   │   └── transcribe/          # Transcription workflow
+│   │       ├── __init__.py
+│   │       ├── workflow.py      # Main workflow orchestration
+│   │       ├── worker.py        # Temporal worker process
+│   │       ├── activities/      # Workflow activities (async tasks)
+│   │       │   ├── __init__.py
+│   │       │   ├── transcribe.py # Whisper transcription activity
+│   │       │   ├── chunk.py     # Semantic chunking activity
+│   │       │   ├── embed.py     # Embedding generation activity
+│   │       │   └── models.py    # Activity data models
+│   │       ├── services/        # AI/ML service wrappers
+│   │       │   ├── __init__.py
+│   │       │   ├── whisper_service.py # OpenAI Whisper integration
+│   │       │   └── ollama_service.py  # vLLM/Ollama LLM client
+│   │       └── utils/           # Workflow utilities
+│   │           ├── __init__.py
+│   │           └── heartbeat.py # Progress tracking & heartbeats
+│   ├── config.py                # Application configuration (Pydantic settings)
+│   ├── logging_config.py        # Logging setup (console + file)
+│   └── cli.py                   # CLI entry points for API & worker
+├── main.py                       # FastAPI application & endpoints
+├── alembic/                      # Database migrations (Alembic)
+│   ├── env.py                   # Alembic environment config
+│   ├── script.py.mako           # Migration template
+│   └── versions/                # Versioned migration scripts
+├── docker/                       # Docker configuration
+│   ├── Dockerfile               # Multi-stage build with CUDA support
+│   ├── docker-compose.yml       # Service orchestration (API, Worker, DB, Temporal)
+│   └── verify/                  # Build verification scripts
+├── tests/                        # Test suite (pytest)
+│   ├── __init__.py
+│   ├── conftest.py              # Pytest fixtures
+│   ├── test_upload.py           # Upload endpoint tests
+│   ├── test_admin_api.py        # Admin endpoint tests
+│   ├── test_temporal.py         # Workflow tests
+│   └── data/                    # Test fixtures (audio files)
+├── scripts/                      # Utility scripts
+│   ├── create_admin_user.py     # Admin user creation
+│   └── generate_token.py        # JWT token generation for testing
+├── config/                       # Configuration templates
+│   ├── .env.example             # Environment variables template
+│   └── alembic.ini              # Alembic configuration
+├── docs/                         # Documentation
+│   ├── ARCHITECTURE.md          # Architecture documentation (this file)
+│   ├── DEVELOPMENT.md           # Development guide
+│   └── API.md                   # API reference
+├── logs/                         # Application logs (rotating)
+├── uploads/                      # Temporary audio file storage
+├── pyproject.toml               # Python package definition (uv/pip)
+├── README.md                    # Project overview & quick start
+└── .gitignore                   # Git ignore rules
+```
+
+**Key Directory Principles:**
+
+1. **Separation of Concerns**: Each directory has a single, well-defined purpose
+2. **Layered Architecture**: Clear boundaries between API, services, workflows, and data layers
+3. **Testability**: Test directory mirrors app structure for easy test discovery
+4. **Configuration as Code**: All config in version control (except secrets in `.env`)
+5. **Documentation Co-location**: Docs live with code for easier maintenance
+
 ## Summary
 
 MxWhisper's architecture prioritizes:
