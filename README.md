@@ -123,7 +123,10 @@ For detailed API documentation, see [API.md](docs/API.md) or visit `http://local
 
 ## Authentication
 
-MxWhisper uses JWT tokens issued by Authentik for authentication. All endpoints (except WebSocket) require a valid JWT token in the `Authorization` header:
+MxWhisper integrates with Authentik using the **official Python SDK** for enterprise-grade authentication and user management.
+
+**Token-based Access**:
+All endpoints (except WebSocket) require a valid JWT token in the `Authorization` header:
 
 ```bash
 Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
@@ -132,6 +135,12 @@ Authorization: Bearer eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9...
 **Roles**:
 - **User**: Can upload files and view their own jobs
 - **Admin**: Can view all jobs and users across the system
+
+**Admin Operations** (via Authentik SDK):
+- User creation and management
+- Group assignment
+- Password management
+- RBAC enforcement
 
 For detailed authentication setup, see [DEVELOPMENT.md](docs/DEVELOPMENT.md#admin-user-setup).
 
@@ -143,7 +152,7 @@ For detailed authentication setup, see [DEVELOPMENT.md](docs/DEVELOPMENT.md#admi
 | Database | PostgreSQL 15+ | Primary data store |
 | Vector Search | pgvector | Semantic similarity search |
 | Workflow Engine | Temporal | Distributed workflow orchestration |
-| Authentication | Authentik | OAuth2/OIDC identity provider |
+| Authentication | Authentik (Python SDK) | OAuth2/OIDC identity provider with admin API |
 | AI - Transcription | OpenAI Whisper | Speech-to-text conversion |
 | AI - Chunking | vLLM/Ollama (Llama 3.1-8B) | Semantic topic analysis |
 | AI - Embeddings | SentenceTransformers | Text embedding generation |

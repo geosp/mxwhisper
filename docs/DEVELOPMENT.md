@@ -21,7 +21,8 @@
 - **Python 3.11+**
 - **PostgreSQL 15+** with pgvector extension
 - **Temporal Server** (for workflow orchestration)
-- **Authentik** (for authentication)
+- **Authentik** (for authentication and user management)
+  - Requires admin API token for user creation via Python SDK
 - **Docker & Docker Compose** (optional, for containerized development)
 - **GPU** (optional, for faster Whisper transcription)
 
@@ -63,7 +64,7 @@ DATABASE_URL=postgresql+asyncpg://postgres:postgres@localhost:5432/mxwhisper
 # Temporal
 TEMPORAL_HOST=localhost:7233
 
-# Authentik
+# Authentik (Authentication & Admin API)
 AUTHENTIK_SERVER_URL=https://auth.example.com
 AUTHENTIK_CLIENT_ID=your-client-id
 AUTHENTIK_CLIENT_SECRET=your-client-secret
@@ -71,6 +72,10 @@ AUTHENTIK_ISSUER_URL=https://auth.example.com/application/o/mxwhisper/
 AUTHENTIK_JWKS_URL=https://auth.example.com/application/o/mxwhisper/jwks/
 AUTHENTIK_EXPECTED_ISSUER=https://auth.example.com/application/o/mxwhisper/
 AUTHENTIK_EXPECTED_AUDIENCE=mxwhisper
+
+# Authentik Admin API (for user management via Python SDK)
+AUTHENTIK_API_URL=https://auth.example.com/api/v3
+AUTHENTIK_ADMIN_TOKEN=your-admin-api-token
 
 # Ollama/vLLM (for semantic chunking)
 OLLAMA_BASE_URL=http://localhost:8000
@@ -837,6 +842,31 @@ HTTPException: Invalid token signature
 - Ensure token is not expired
 - Verify token issuer and audience match
 
+**6. Authentik SDK errors (user creation fails)**
+
+```
+ApiException: 1 validation error for PaginatedGroupList
+```
+
+**Solution:**
+- **Version mismatch**: Ensure SDK version matches server version
+- Check installed SDK: `uv pip list | grep authentik`
+- Should be: `authentik-client==2024.8.2.post1726491842` for Authentik 2024.8.3
+- Update version in `pyproject.toml` if needed
+- Run `uv sync` to install correct version
+
+**7. Admin API token invalid**
+
+```
+ApiException: Authentication credentials were not provided
+```
+
+**Solution:**
+- Verify `AUTHENTIK_ADMIN_TOKEN` in `.env`
+- Check token hasn't expired in Authentik admin UI
+- Ensure token has admin privileges
+- Create new token: Directory → Tokens & App passwords → Create Token
+
 ### Debug Mode
 
 ```bash
@@ -923,22 +953,88 @@ stats.print_stats(20)  # Top 20 slowest
 
 ---
 
-## Admin User Setup
+## Authentik Integration
 
-### Manual Authentik Group Configuration
+### Authentik Python SDK
+
+MxWhisper uses the **official Authentik Python SDK** (`authentik-client`) for admin operations like user creation and group management.
+
+**SDK Version:**
+- Package: `authentik-client==2024.8.2.post1726491842`
+- Must match your Authentik server version (2024.8.x compatible with 2024.8.3 server)
+
+**What the SDK is used for:**
+- Creating users programmatically
+- Assigning users to groups
+- Setting passwords
+- Looking up group UUIDs by name
+
+**Implementation:**
+- Located in [`app/auth/authentik.py`](../app/auth/authentik.py)
+- Uses `asyncio.to_thread()` wrapper for async compatibility
+- Type-safe operations with `UserRequest` and other Pydantic models
+- Automatic error handling with `ApiException`
+
+### Creating Service Accounts (API Users)
+
+Use the provided script to create service accounts with non-expiring JWT tokens:
+
+```bash
+# Create regular user service account
+uv run python scripts/create_api_user.py \
+  --username api-service \
+  --email service@example.com \
+  --role user
+
+# Create admin service account
+uv run python scripts/create_api_user.py \
+  --username api-admin \
+  --email admin@example.com \
+  --role admin
+```
+
+**The script will:**
+1. Create user in Authentik via Python SDK
+2. Assign user to appropriate groups (`users`, `admin.mxwhisper`)
+3. Create user record in local database
+4. Generate non-expiring JWT token for API access
+
+**Example output:**
+```
+✅ Service account created successfully!
+   User ID: 34
+   Username: api-service
+   Email: service@example.com
+   Role: user
+
+🔑 Non-expiring JWT token:
+================================================================================
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
+================================================================================
+```
+
+### Admin User Setup
+
+#### Manual Authentik Group Configuration
 
 **You need to do this manually in the Authentik web UI:**
 
 1. **Log into Authentik Admin**: `http://authentik.yourdomain.net/if/admin/`
-2. **Create Admin Group**:
+2. **Create Groups** (if not already created):
    - Directory → Groups → Create
-   - Name: `admin.mxwhisper` (recommended for consistency)
-   - Add users who should have admin access
-3. **Add Admin Users**:
-   - Directory → Users → Select user → Groups tab → Add to admin group
-4. **Test JWT Token**:
+   - Name: `users` (for all users)
+   - Name: `admin.mxwhisper` (for admin access)
+3. **Get Admin API Token**:
+   - Directory → Tokens & App passwords → Create Token
+   - User: Select admin user
+   - Intent: API Token
+   - Expires: Never (or set appropriate expiry)
+   - Copy token and add to `.env` as `AUTHENTIK_ADMIN_TOKEN`
+4. **Add Admin Users**:
+   - Directory → Users → Select user → Groups tab → Add to `admin.mxwhisper` group
+5. **Test JWT Token**:
    - Login with admin user
-   - JWT should contain: `"groups": ["admin", ...]`
+   - JWT should contain: `"groups": ["admin.mxwhisper", ...]`
 
 ### Setting Up a Specific Admin User
 

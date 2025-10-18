@@ -92,9 +92,10 @@ Each service has a single, well-defined responsibility:
 | Service | Responsibility | Dependencies |
 |---------|---------------|--------------|
 | **JobService** | Job lifecycle management, workflow triggering | Temporal, Database |
-| **UserService** | User management, role verification | Database, Authentik |
+| **UserService** | User management, role verification | Database, Authentik SDK |
 | **EmbeddingService** | Vector embedding generation | SentenceTransformers |
 | **WebSocketManager** | Real-time client notifications | In-memory connection registry |
+| **AuthentikAPIClient** | Admin operations (user/group management) | Authentik SDK |
 
 **Key Characteristics:**
 - Services are stateless
@@ -200,14 +201,36 @@ get_all_jobs()     # Admin: get all jobs
 **Responsibilities:**
 - User registration and management
 - Role assignment and verification
-- Integration with Authentik
+- Integration with Authentik (via official Python SDK)
 
 **Key Operations:**
 ```python
 initialize_roles()      # Setup default roles
 get_or_create_user()   # Create user from JWT
 is_admin()             # Check admin privileges
+create_user_in_authentik_and_db()  # Create user in both systems
 ```
+
+#### AuthentikAPIClient ([app/auth/authentik.py](../app/auth/authentik.py))
+
+**Responsibilities:**
+- Admin API operations using official Authentik Python SDK
+- User creation and password management
+- Group lookups and assignments
+
+**Key Operations:**
+```python
+create_user()          # Create user via SDK
+get_user()            # Retrieve user by ID
+add_user_to_group()   # Assign user to group
+_get_group_id_by_name()  # Lookup group UUID by name
+```
+
+**SDK Integration:**
+- Uses `authentik-client` Python package (version-matched to server)
+- Type-safe API calls with Pydantic models (`UserRequest`, `UserPasswordSetRequest`)
+- Async wrapper around synchronous SDK using `asyncio.to_thread()`
+- Automatic error handling with `ApiException`
 
 #### EmbeddingService ([embedding_service.py](../app/services/embedding_service.py))
 
@@ -679,9 +702,39 @@ sequenceDiagram
 - Issuer validation
 - Audience validation
 - Expiration checking
-- Key caching for performance
+- Key caching for performance (24-hour JWKS cache)
 
-**2. Role-Based Access Control (RBAC):**
+**2. Authentik Python SDK Integration:**
+The application uses the official `authentik-client` Python SDK for admin operations:
+
+```python
+# Example: Creating a user via SDK
+from authentik_client.models import UserRequest
+
+user_request = UserRequest(
+    username="newuser",
+    email="user@example.com",
+    name="New User",
+    is_active=True,
+    groups=["group-uuid"]
+)
+user = core_api.core_users_create(user_request)
+```
+
+**SDK Benefits:**
+- Type-safe API operations with Pydantic models
+- Automatic request/response serialization
+- Built-in error handling with `ApiException`
+- Version-locked to server (2024.8.2 → 2024.8.3 compatibility)
+- Async wrapper using `asyncio.to_thread()` for non-blocking operations
+
+**Admin Operations:**
+- User creation with automatic group assignment
+- Password management via `core_users_set_password_create()`
+- Group lookups by name with UUID resolution
+- User retrieval and updates
+
+**3. Role-Based Access Control (RBAC):**
 ```python
 # Admin-only endpoint
 @app.get("/admin/users")
@@ -690,16 +743,16 @@ async def get_users(user_id: str = Depends(verify_token)):
         raise HTTPException(403, "Admin access required")
 ```
 
-**3. Data Isolation:**
+**4. Data Isolation:**
 - Users can only access their own jobs
 - Admin can access all data
 - Database queries filtered by user_id
 
-**4. SQL Injection Protection:**
+**5. SQL Injection Protection:**
 - SQLAlchemy ORM with parameterized queries
 - Input validation via Pydantic models
 
-**5. CORS Configuration:**
+**6. CORS Configuration:**
 ```python
 allow_origins=["*"]  # ⚠️ Configure for production
 allow_credentials=True
@@ -707,7 +760,7 @@ allow_methods=["*"]
 allow_headers=["*", "Authorization"]
 ```
 
-**6. File Upload Security:**
+**7. File Upload Security:**
 - Maximum file size limit (1GB default)
 - File type validation
 - Temporary storage with cleanup
@@ -785,7 +838,8 @@ The following table lists all technologies used in MxWhisper with version requir
 | **ORM** | SQLAlchemy | 2.0.44+ | Database ORM with async support | Industry standard, async engine, type safety |
 | **DB Driver** | AsyncPG | 0.30.0+ | Async PostgreSQL driver | High performance, full async/await support |
 | **Workflow Engine** | Temporalio | 1.18.1+ | Distributed workflow orchestration | Durable execution, automatic retries, observability |
-| **Auth** | Authentik | - | OAuth2/OIDC authentication | Self-hosted identity provider, RBAC support |
+| **Auth** | Authentik (with Python SDK) | 2024.8.2+ | OAuth2/OIDC authentication + Admin API | Self-hosted identity provider, RBAC, user management |
+| **Auth SDK** | authentik-client | 2024.8.2.post1726491842 | Authentik Admin API client | Type-safe user/group operations, version-matched to server |
 | **JWT** | Python-Jose | 3.5.0+ | JWT token handling | JWKS support, RS256 verification |
 | **AI - Transcription** | OpenAI Whisper | 20250625 | Speech-to-text conversion | State-of-the-art accuracy, multilingual |
 | **AI - Chunking** | vLLM / Ollama | - | LLM inference (Llama 3.1-8B) | Fast inference, semantic understanding |
@@ -831,9 +885,11 @@ The following table lists all technologies used in MxWhisper with version requir
 ```
 mxwhisper/
 ├── app/                          # Main application package
-│   ├── auth/                     # Authentication & JWT verification
+│   ├── auth/                     # Authentication & authorization layer
 │   │   ├── __init__.py
-│   │   └── jwt.py               # JWT token verification logic
+│   │   ├── jwt.py               # JWT token verification logic
+│   │   ├── authentik.py         # Authentik SDK client for admin operations
+│   │   └── permissions.py       # RBAC permission checks
 │   ├── data/                     # Database layer
 │   │   ├── __init__.py
 │   │   ├── models.py            # SQLAlchemy models (User, Job, JobChunk, Role)
