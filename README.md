@@ -161,7 +161,7 @@ sequenceDiagram
 
     Temporal->>Worker: Execute workflow
 
-    rect rgb(200, 230, 255)
+    rect rgba(35, 43, 49, 1)
         Note over Worker: Step 1: Transcribe
         Worker->>DB: Update status: processing
         Worker->>WS: Status update (progress: 0%)
@@ -173,7 +173,7 @@ sequenceDiagram
         WS-->>Client: Transcription complete
     end
 
-    rect rgb(255, 240, 200)
+    rect rgba(180, 164, 121, 1)
         Note over Worker: Step 2: Semantic Chunking
         Worker->>LLM: Analyze topics in transcript
         LLM-->>Worker: Topic boundaries + metadata
@@ -182,7 +182,7 @@ sequenceDiagram
         WS-->>Client: Chunking complete
     end
 
-    rect rgb(200, 255, 200)
+    rect rgba(60, 85, 60, 1)
         Note over Worker: Step 3: Generate Embeddings
         Worker->>DB: Load chunks
         Worker->>STrans: Batch generate embeddings
