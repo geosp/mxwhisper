@@ -261,47 +261,55 @@ class OllamaChunker:
         """Build the prompt for Ollama topic detection."""
         # Estimate token count (rough: 1 token ≈ 4 characters)
         estimated_tokens = len(transcript) // 4
+        transcript_length = len(transcript)
 
-        return f"""Analyze this transcript and identify topic boundaries for semantic chunking.
+        return f"""Analyze this COMPLETE transcript and identify ALL topic boundaries for semantic chunking.
 
-Transcript ({estimated_tokens} tokens):
+Transcript length: {transcript_length} characters ({estimated_tokens} tokens)
+
+TRANSCRIPT START:
 {transcript}
+TRANSCRIPT END
 
-Instructions:
-1. Identify where major topics change in the content
-2. Each chunk should be {settings.chunk_min_tokens}-{settings.chunk_max_tokens} tokens
-3. Chunks MUST align with natural topic boundaries (complete thoughts/sections)
-4. For each topic segment, provide:
-   - start_pos: character position where topic starts (integer)
-   - end_pos: character position where topic ends (integer)
-   - topic: 1-2 sentence summary of the topic
-   - keywords: 3-5 most important keywords (array of strings)
-   - confidence: your confidence in this being a topic boundary (0.0-1.0)
+CRITICAL INSTRUCTIONS:
+1. You MUST chunk the ENTIRE transcript from character 0 to character {transcript_length}
+2. The LAST chunk MUST have "end_pos": {transcript_length}
+3. Identify where major topics change in the content
+4. Each chunk should be {settings.chunk_min_tokens}-{settings.chunk_max_tokens} tokens
+5. Chunks MUST align with natural topic boundaries (complete thoughts/sections)
 
-IMPORTANT: Return ONLY valid JSON in this exact format (no markdown, no explanation, no code blocks):
+For each topic segment, provide:
+- start_pos: character position where topic starts (integer)
+- end_pos: character position where topic ends (integer)
+- topic: 1-2 sentence summary of the topic
+- keywords: 3-5 most important keywords (array of strings)
+- confidence: your confidence in this being a topic boundary (0.0-1.0)
+
+REQUIRED FORMAT - Return ONLY valid JSON (no markdown, no explanation, no code blocks):
 {{
   "chunks": [
     {{
       "start_pos": 0,
-      "end_pos": 1234,
-      "topic": "Introduction to the main theme and context",
-      "keywords": ["introduction", "theme", "overview", "context"],
+      "end_pos": 500,
+      "topic": "Introduction to the main theme",
+      "keywords": ["introduction", "theme", "overview"],
       "confidence": 0.95
     }},
     {{
-      "start_pos": 1234,
-      "end_pos": 2456,
-      "topic": "Deep dive into the first major concept",
-      "keywords": ["concept", "explanation", "details", "analysis"],
+      "start_pos": 500,
+      "end_pos": {transcript_length},
+      "topic": "Next topic continues to the end",
+      "keywords": ["topic", "keywords", "example"],
       "confidence": 0.90
     }}
   ]
 }}
 
-Rules:
-- Ensure ALL content is covered (first chunk starts at 0, last chunk ends at {len(transcript)})
-- No gaps between chunks
-- No overlapping chunks (each chunk's start_pos = previous chunk's end_pos)
+VALIDATION RULES:
+- First chunk MUST start at position 0
+- Last chunk MUST end at position {transcript_length} (the exact end of the transcript)
+- No gaps between chunks (each chunk's start_pos = previous chunk's end_pos)
+- No overlapping chunks
 - Return pure JSON only
 """
 
@@ -375,6 +383,20 @@ Rules:
 
             if not chunks:
                 raise ValueError("No valid chunks extracted from Ollama response")
+
+            # Verify that chunks cover the entire transcript
+            if chunks:
+                last_chunk_end = chunks[-1].end_char_pos
+                transcript_length = len(transcript)
+                coverage_percentage = (last_chunk_end / transcript_length) * 100 if transcript_length > 0 else 0
+
+                # Allow small tolerance (98%) for rounding/whitespace differences
+                if coverage_percentage < 98:
+                    logger.warning(f"Chunks only cover {coverage_percentage:.1f}% of transcript ({last_chunk_end}/{transcript_length} chars). Falling back to sentence chunking for complete coverage.")
+                    raise ValueError(f"Incomplete transcript coverage: {coverage_percentage:.1f}%")
+
+                if coverage_percentage < 100:
+                    logger.info(f"Chunks cover {coverage_percentage:.1f}% of transcript - within acceptable range")
 
             logger.info(f"Successfully parsed {len(chunks)} chunks from Ollama")
             return chunks

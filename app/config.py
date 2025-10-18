@@ -14,9 +14,9 @@ class Settings(BaseSettings):
     enable_semantic_chunking: bool = True
     chunking_strategy: str = "ollama"  # Options: ollama, sentence, simple
 
-    # Ollama Configuration
-    ollama_base_url: str = "http://ollamas.mixwarecs-home.net"
-    ollama_model: str = "gpt-oss:20b"
+    # Ollama Configuration (also supports vLLM and OpenAI-compatible endpoints)
+    ollama_base_url: str = "http://fedora.mixwarecs-home.net:8000"
+    ollama_model: str = "hugging-quants/Meta-Llama-3.1-8B-Instruct-AWQ-INT4"
     ollama_timeout: int = 300  # seconds (total timeout) - increased from 120
     ollama_max_retries: int = 3
     ollama_connect_timeout: int = 60  # seconds - increased from 30

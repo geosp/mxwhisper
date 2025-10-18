@@ -162,18 +162,24 @@ async def _create_single_chunk(job_id: int, transcript: str, segments: List[Dict
 
 async def _check_ollama_health(chunker: OllamaChunker) -> bool:
     """
-    Quick health check for Ollama service.
-    
-    Returns True if Ollama is responsive, False otherwise.
+    Quick health check for LLM service (Ollama, vLLM, or OpenAI-compatible).
+
+    Returns True if the service is responsive, False otherwise.
     """
     try:
-        # Try a simple request to check if Ollama is available
+        # Try a simple request to check if the LLM service is available
         timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
         async with httpx.AsyncClient(timeout=timeout) as client:
+            # Try OpenAI-compatible endpoint first (works with vLLM, Ollama, etc.)
+            response = await client.get(f"{chunker.base_url}/v1/models")
+            if response.status_code == 200:
+                return True
+
+            # Fallback to Ollama-specific endpoint for older Ollama versions
             response = await client.get(f"{chunker.base_url}/api/tags")
             return response.status_code == 200
     except Exception as e:
-        logger.warning(f"Ollama health check failed: {e}")
+        logger.warning(f"LLM service health check failed: {e}")
         return False
 
 
