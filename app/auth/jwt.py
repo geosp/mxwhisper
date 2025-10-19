@@ -81,18 +81,72 @@ def get_public_key(token: str) -> str:
         raise HTTPException(status_code=401, detail="Invalid token format")
 
 
+async def verify_authentik_api_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify Authentik API token by calling Authentik's user info endpoint.
+
+    Authentik API tokens are opaque tokens (not JWTs) that need to be verified
+    by calling Authentik's API.
+    """
+    if not settings.authentik_server_url:
+        logger.warning("Authentik server URL not configured")
+        return None
+
+    try:
+        # Call Authentik's user info endpoint with the token
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                f"{settings.authentik_server_url}/application/o/userinfo/",
+                headers={"Authorization": f"Bearer {token}"},
+                timeout=10.0
+            )
+
+            if response.status_code == 200:
+                user_info = response.json()
+                logger.info("Authentik API token verified successfully", extra={
+                    "sub": user_info.get("sub"),
+                    "username": user_info.get("preferred_username")
+                })
+                return user_info
+            else:
+                logger.debug("Authentik API token verification failed", extra={
+                    "status_code": response.status_code
+                })
+                return None
+
+    except Exception as e:
+        logger.debug("Failed to verify Authentik API token", extra={
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return None
+
+
 async def verify_authentik_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Verify JWT token issued by Authentik."""
+    """Verify JWT token or API token issued by Authentik."""
     token = credentials.credentials
     logger.debug("Verifying Authentik token")
 
-    # Get JWKS
-    await get_jwks()
+    # First, try to verify as an Authentik API token (opaque token)
+    # These are ~60 character tokens without JWT structure
+    if len(token) < 100 and '.' not in token:
+        logger.debug("Token appears to be an Authentik API token, verifying via API")
+        user_info = await verify_authentik_api_token(token)
+        if user_info:
+            return user_info
+        else:
+            # API token verification failed
+            logger.warning("Authentik API token verification failed")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
 
-    # Get public key
-    public_key = get_public_key(token)
-
+    # Try to verify as a JWT token
     try:
+        # Get JWKS
+        await get_jwks()
+
+        # Get public key
+        public_key = get_public_key(token)
+
         # Decode and verify token
         payload = jwt.decode(
             token,
@@ -118,7 +172,7 @@ async def verify_authentik_token(credentials: HTTPAuthorizationCredentials = Dep
                 "username": payload.get("preferred_username")
             })
 
-        logger.info("Token verified successfully", extra={
+        logger.info("JWT token verified successfully", extra={
             "sub": payload.get("sub"),
             "username": payload.get("preferred_username"),
             "exp": exp
@@ -133,26 +187,142 @@ async def verify_authentik_token(credentials: HTTPAuthorizationCredentials = Dep
         raise HTTPException(status_code=401, detail=f"Token validation failed: {str(e)}")
 
 
-async def verify_legacy_token(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
-    """Verify JWT token using legacy HS256 method (for testing only)."""
-    token = credentials.credentials
+def create_service_account_token(user_data: dict, expires_days: int = 365) -> str:
+    """
+    Create a service account JWT token for API access.
 
+    These are self-signed JWTs that don't require OAuth2 web login.
+    They're meant for programmatic API access (scripts, services, etc.).
+
+    Args:
+        user_data: User information dict with keys: sub, email, name, preferred_username, groups
+        expires_days: Days until token expires (default: 365)
+
+    Returns:
+        JWT token string
+    """
+    to_encode = user_data.copy()
+
+    # Add expiration
+    expire = datetime.utcnow() + timedelta(days=expires_days)
+    to_encode.update({
+        "exp": expire,
+        "iat": datetime.utcnow(),
+        "token_type": "service_account"  # Mark as service account token
+    })
+
+    # Sign with service account secret
+    encoded_jwt = jwt.encode(
+        to_encode,
+        settings.service_account_jwt_secret,
+        algorithm=settings.service_account_jwt_algorithm
+    )
+
+    logger.info("Service account token created", extra={
+        "sub": user_data.get("sub"),
+        "username": user_data.get("preferred_username"),
+        "expires_days": expires_days
+    })
+
+    return encoded_jwt
+
+
+async def verify_service_account_token(token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verify a service account JWT token.
+
+    These are self-signed JWTs for API access without OAuth2.
+    """
     try:
-        SECRET_KEY = "your-secret-key-here"  # Should match create_access_token
-        ALGORITHM = "HS256"
-
-        payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+        payload = jwt.decode(
+            token,
+            settings.service_account_jwt_secret,
+            algorithms=[settings.service_account_jwt_algorithm]
+        )
 
         # Check if token is expired
         exp = payload.get("exp")
         if exp and datetime.utcfromtimestamp(exp) < datetime.utcnow():
-            logger.warning("Token expired", extra={
+            logger.warning("Service account token expired", extra={
+                "exp": exp,
+                "current_time": datetime.utcnow().timestamp()
+            })
+            return None
+
+        # Check if it's a service account token
+        if payload.get("token_type") != "service_account":
+            logger.warning("Token is not a service account token")
+            return None
+
+        logger.info("Service account token verified successfully", extra={
+            "sub": payload.get("sub"),
+            "username": payload.get("preferred_username")
+        })
+
+        return payload
+
+    except JWTError as e:
+        logger.debug("Service account token validation failed", extra={
+            "error": str(e),
+            "error_type": type(e).__name__
+        })
+        return None
+
+
+async def verify_token_with_fallback(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
+    """
+    Verify token with multiple fallback methods:
+    1. Service account JWT (self-signed for API access)
+    2. Authentik API token (opaque token)
+    3. Authentik JWT token (OAuth2/OIDC)
+    """
+    token = credentials.credentials
+    logger.debug("Verifying token with fallback methods")
+
+    # Try service account JWT first (most common for API access)
+    if '.' in token:  # JWTs have dots
+        service_account_payload = await verify_service_account_token(token)
+        if service_account_payload:
+            return service_account_payload
+
+    # Try Authentik API token (opaque token ~60 chars)
+    if len(token) < 100 and '.' not in token:
+        logger.debug("Token appears to be an Authentik API token, verifying via API")
+        user_info = await verify_authentik_api_token(token)
+        if user_info:
+            return user_info
+        else:
+            # API token verification failed
+            logger.warning("Authentik API token verification failed")
+            raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    # Try Authentik JWT token (OAuth2/OIDC)
+    try:
+        # Get JWKS
+        await get_jwks()
+
+        # Get public key
+        public_key = get_public_key(token)
+
+        # Decode and verify token
+        payload = jwt.decode(
+            token,
+            public_key,
+            algorithms=["RS256"],  # Authentik typically uses RS256
+            audience=settings.authentik_expected_audience,
+            issuer=settings.authentik_expected_issuer
+        )
+
+        # Check if token is expired
+        exp = payload.get("exp")
+        if exp and datetime.utcfromtimestamp(exp) < datetime.utcnow():
+            logger.warning("Authentik JWT token expired", extra={
                 "exp": exp,
                 "current_time": datetime.utcnow().timestamp()
             })
             raise HTTPException(status_code=401, detail="Token expired")
 
-        logger.info("Legacy token verified successfully", extra={
+        logger.info("Authentik JWT token verified successfully", extra={
             "sub": payload.get("sub"),
             "username": payload.get("preferred_username"),
             "exp": exp
@@ -160,33 +330,12 @@ async def verify_legacy_token(credentials: HTTPAuthorizationCredentials = Depend
         return payload
 
     except JWTError as e:
-        logger.warning("Legacy token validation failed", extra={
+        logger.warning("All token validation methods failed", extra={
             "error": str(e),
             "error_type": type(e).__name__
         })
         raise HTTPException(status_code=401, detail=f"Token validation failed: {str(e)}")
 
 
-# Legacy function for backward compatibility (remove after full Authentik integration)
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, never_expire: bool = False):
-    """Create a JWT token (for development/testing only)."""
-    SECRET_KEY = "your-secret-key-here"  # Should be in settings
-    ALGORITHM = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES = 30
-
-    to_encode = data.copy()
-    if never_expire:
-        # Don't set expiration for service accounts
-        pass
-    elif expires_delta:
-        expire = datetime.utcnow() + expires_delta
-        to_encode.update({"exp": expire})
-    else:
-        expire = datetime.utcnow() + timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-        to_encode.update({"exp": expire})
-    encoded_jwt = jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
-    return encoded_jwt
-
-
-# Use legacy JWT verification for testing (switch back to Authentik in production)
-verify_token = verify_legacy_token
+# Set default token verification to use fallback method (tries all token types)
+verify_token = verify_token_with_fallback

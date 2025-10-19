@@ -2,6 +2,8 @@
 User management services for MxWhisper
 """
 import logging
+from datetime import datetime
+from typing import Optional, Dict, Any
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -99,6 +101,118 @@ class UserService:
 
             await db.commit()
             await db.refresh(user)
+        return user
+
+    @staticmethod
+    async def store_token_metadata(
+        db: AsyncSession,
+        user_id: str,
+        token_identifier: str,
+        expires_at: datetime,
+        description: str = ""
+    ) -> User:
+        """
+        Store Authentik token metadata for a user.
+
+        Args:
+            db: Database session
+            user_id: User ID
+            token_identifier: Authentik token identifier
+            expires_at: Token expiration datetime
+            description: Token description
+
+        Returns:
+            Updated User object
+        """
+        logger.debug("Storing token metadata", extra={
+            "user_id": user_id,
+            "token_identifier": token_identifier,
+            "expires_at": expires_at.isoformat() if expires_at else None
+        })
+
+        user = await db.get(User, user_id)
+        if not user:
+            logger.error("User not found when storing token metadata", extra={
+                "user_id": user_id
+            })
+            raise ValueError(f"User {user_id} not found")
+
+        # Convert timezone-aware datetime to naive UTC datetime for database storage
+        # Our database columns are TIMESTAMP WITHOUT TIME ZONE
+        expires_at_naive = expires_at.replace(tzinfo=None) if expires_at and expires_at.tzinfo else expires_at
+
+        user.authentik_token_identifier = token_identifier
+        user.token_created_at = datetime.now()
+        user.token_expires_at = expires_at_naive
+        user.token_description = description
+
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info("Token metadata stored successfully", extra={
+            "user_id": user_id,
+            "token_identifier": token_identifier
+        })
+
+        return user
+
+    @staticmethod
+    async def get_token_metadata(db: AsyncSession, user_id: str) -> Optional[Dict[str, Any]]:
+        """
+        Get token metadata for a user.
+
+        Args:
+            db: Database session
+            user_id: User ID
+
+        Returns:
+            Dict with token metadata or None if no token
+        """
+        user = await db.get(User, user_id)
+        if not user or not user.authentik_token_identifier:
+            return None
+
+        return {
+            "identifier": user.authentik_token_identifier,
+            "created_at": user.token_created_at,
+            "expires_at": user.token_expires_at,
+            "description": user.token_description,
+            "is_expired": user.token_expires_at < datetime.now() if user.token_expires_at else False
+        }
+
+    @staticmethod
+    async def clear_token_metadata(db: AsyncSession, user_id: str) -> User:
+        """
+        Clear token metadata for a user (after revocation).
+
+        Args:
+            db: Database session
+            user_id: User ID
+
+        Returns:
+            Updated User object
+        """
+        logger.debug("Clearing token metadata", extra={"user_id": user_id})
+
+        user = await db.get(User, user_id)
+        if not user:
+            logger.error("User not found when clearing token metadata", extra={
+                "user_id": user_id
+            })
+            raise ValueError(f"User {user_id} not found")
+
+        user.authentik_token_identifier = None
+        user.token_created_at = None
+        user.token_expires_at = None
+        user.token_description = None
+
+        await db.commit()
+        await db.refresh(user)
+
+        logger.info("Token metadata cleared successfully", extra={
+            "user_id": user_id
+        })
+
         return user
 
 

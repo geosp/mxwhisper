@@ -30,6 +30,13 @@ class User(Base):
     preferred_username: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     role_id: Mapped[int] = mapped_column(ForeignKey("roles.id"), default=2)  # Foreign key to roles table
     role: Mapped[Role] = relationship("Role")  # Relationship to Role table
+
+    # Authentik token metadata for service accounts
+    authentik_token_identifier: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Authentik token ID for revocation
+    token_created_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)  # When token was issued
+    token_expires_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)  # When token expires
+    token_description: Mapped[Optional[str]] = mapped_column(String(500), nullable=True)  # Human-readable token description
+
     created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 

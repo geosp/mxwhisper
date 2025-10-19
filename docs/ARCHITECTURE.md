@@ -938,8 +938,8 @@ mxwhisper/
 │   ├── test_temporal.py         # Workflow tests
 │   └── data/                    # Test fixtures (audio files)
 ├── scripts/                      # Utility scripts
-│   ├── create_admin_user.py     # Admin user creation
-│   └── generate_token.py        # JWT token generation for testing
+│   ├── manage_users.py          # User management (list/create/delete/update)
+│   └── manage_tokens.py         # Token management (list/generate/revoke/rotate)
 ├── config/                       # Configuration templates
 │   ├── .env.example             # Environment variables template
 │   └── alembic.ini              # Alembic configuration

@@ -44,6 +44,14 @@ class Settings(BaseSettings):
     authentik_api_url: str = ""
     authentik_admin_token: str = ""  # Admin token for API access
 
+    # Token Configuration
+    default_token_expiry_days: int = 365  # Default token expiration in days (1 year)
+
+    # Service Account JWT Configuration
+    # These are self-signed JWTs for API access without OAuth2 web login
+    service_account_jwt_secret: str = "change-this-secret-key-in-production"  # Secret key for signing service account JWTs
+    service_account_jwt_algorithm: str = "HS256"  # Algorithm for service account JWTs
+
     # Test token for API verification
     test_token: str = ""
 

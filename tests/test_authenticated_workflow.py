@@ -13,16 +13,27 @@ import pytest
 from jose import jwt
 from sqlalchemy import select
 
-from app.auth.jwt import create_access_token  # Import the legacy create_access_token function
-
-# JWT settings for testing (matches the legacy create_access_token function)
+# JWT settings for testing
 JWT_SECRET = "your-secret-key-here"
 JWT_ALGORITHM = "HS256"
 
 def create_test_jwt(user_data: dict, expires_delta: timedelta = None) -> str:
-    """Create a JWT token for testing using legacy method."""
-    # Use the legacy create_access_token function
-    return create_access_token(user_data, expires_delta)
+    """Create a JWT token for testing.
+
+    Note: This creates test tokens directly. In production, tokens come from Authentik.
+    For testing purposes, we create HS256 tokens. Real Authentik tokens use RS256.
+    """
+    from datetime import datetime
+    from jose import jwt
+
+    payload = user_data.copy()
+    if expires_delta:
+        expire = datetime.utcnow() + expires_delta
+    else:
+        expire = datetime.utcnow() + timedelta(minutes=30)
+    payload.update({"exp": expire})
+
+    return jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 async def create_test_user(base_url: str) -> dict:
     """Create a test user via the admin API."""
@@ -103,15 +114,19 @@ async def create_test_user(base_url: str) -> dict:
 
 @pytest.mark.asyncio
 async def test_authenticated_workflow():
-    """Test the complete authenticated workflow."""
+    """Test the complete authenticated workflow.
+
+    Note: This test creates JWT tokens directly for testing. In production,
+    tokens come from Authentik. For testing to work with test tokens, you need
+    to either:
+    1. Mock the Authentik token verification
+    2. Use actual Authentik tokens
+    3. Configure your test environment to accept HS256 tokens
+
+    This test currently assumes option 3 for simplicity.
+    """
     print("🚀 Starting authenticated end-to-end test...")
     print("="*60)
-
-    # Temporarily switch to legacy JWT verification for testing
-    import app.auth.jwt as jwt_module
-    original_verify_token = jwt_module.verify_token
-    jwt_module.verify_token = jwt_module.verify_legacy_token
-    print("🔧 Switched to legacy JWT verification for testing")
 
     try:
         base_url = "http://localhost:8000"
@@ -281,9 +296,6 @@ async def test_authenticated_workflow():
     finally:
         # Always cleanup test data
         await cleanup_test_data(base_url, created_user_id, created_job_id)
-        # Switch back to Authentik verification
-        jwt_module.verify_token = original_verify_token
-        print("🔧 Switched back to Authentik JWT verification")
 
 async def cleanup_test_data(base_url: str, user_id: str = None, job_id: str = None):
     """Clean up test data - delete user and job."""

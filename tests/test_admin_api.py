@@ -18,19 +18,27 @@ JWT_SECRET = "your-secret-key-here"
 JWT_ALGORITHM = "HS256"
 
 def create_admin_jwt() -> str:
-    """Create a mock JWT token for admin user using the legacy method."""
-    from app.auth import create_access_token
-    from datetime import timedelta
-    
+    """Create a mock JWT token for admin user for testing.
+
+    Note: Since we removed legacy token creation, this creates a token
+    using the same format that Authentik would issue. For real Authentik tokens,
+    use the actual Authentik server or mock the verification instead.
+    """
+    from jose import jwt
+    from datetime import timedelta, datetime
+
     user_data = {
         "sub": "550e8400-e29b-41d4-a716-446655440000",  # UUID format
         "email": "admin@mxwhisper.com",
         "name": "MxWhisper Admin",
         "preferred_username": "admin.mxwhisper",
-        "groups": ["admin.mxwhisper", "users"]
+        "groups": ["admin.mxwhisper", "users"],
+        "exp": datetime.utcnow() + timedelta(hours=1)
     }
-    
-    return create_access_token(user_data, expires_delta=timedelta(hours=1))
+
+    # Create a test token using HS256 for testing purposes
+    # In production, Authentik uses RS256 with proper key pairs
+    return jwt.encode(user_data, JWT_SECRET, algorithm=JWT_ALGORITHM)
 
 @pytest.mark.asyncio
 async def test_create_user():
