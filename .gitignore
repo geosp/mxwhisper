@@ -47,6 +47,7 @@ uploads/
 .coverage
 htmlcov/
 *.cover
+tests/data/
 
 # Linting/Formatting
 .ruff_cache/
