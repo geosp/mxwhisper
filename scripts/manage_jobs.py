@@ -38,7 +38,6 @@ import sys
 import logging
 import json
 from pathlib import Path
-from datetime import datetime
 
 # Add the project root to Python path
 project_root = Path(__file__).parent.parent
@@ -48,37 +47,12 @@ from dotenv import load_dotenv
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from app.data import Job, JobChunk, User, get_db_session
+from app.utils.srt import generate_srt
 
 # Load environment variables
 load_dotenv()
 
 logger = logging.getLogger(__name__)
-
-
-def format_timestamp(seconds):
-    """Format seconds to SRT timestamp format (HH:MM:SS,mmm)."""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    milliseconds = int((seconds % 1) * 1000)
-
-    return f"{hours:02d}:{minutes:02d}:{secs:02d},{milliseconds:03d}"
-
-
-def generate_srt(segments):
-    """Generate SRT format from Whisper segments."""
-    srt_lines = []
-    for i, segment in enumerate(segments, 1):
-        start_time = format_timestamp(segment['start'])
-        end_time = format_timestamp(segment['end'])
-        text = segment['text'].strip()
-
-        srt_lines.append(str(i))
-        srt_lines.append(f"{start_time} --> {end_time}")
-        srt_lines.append(text)
-        srt_lines.append("")  # Empty line between entries
-
-    return "\n".join(srt_lines)
 
 
 async def list_jobs(user_filter: str = None, status_filter: str = None):
