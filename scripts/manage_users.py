@@ -205,16 +205,10 @@ async def create_user(username: str, email: str, name: str = None, role: str = "
         expires_at = datetime.utcnow() + timedelta(days=token_expiry_days)
 
         # Store token metadata in database
-        safe_username = username.replace('.', '_').replace('@', '_')
-        token_identifier = f"{safe_username}-jwt-token"
-        token_description = f"Service account JWT for {username} ({role} role)"
-
         await UserService.store_token_metadata(
             db=db,
             user_id=database_user.id,
-            token_identifier=token_identifier,
-            expires_at=expires_at,
-            description=token_description
+            expires_at=expires_at
         )
 
         print(f"✅ Service account JWT token generated!")
@@ -286,8 +280,8 @@ async def delete_user(username: str, force: bool = False):
         print(f"   User ID: {user.id}")
         print(f"   Associated Jobs: {job_count}")
 
-        if user.authentik_token_identifier:
-            print(f"   Active Token: {user.authentik_token_identifier}")
+        if user.token_expires_at and user.token_expires_at > datetime.utcnow():
+            print(f"   Active Token: Expires {user.token_expires_at.strftime('%Y-%m-%d %H:%M:%S UTC')}")
 
         print()
 
@@ -308,7 +302,7 @@ async def delete_user(username: str, force: bool = False):
         print()
 
         # Clear token metadata (JWT tokens can't be revoked, they expire naturally)
-        if user.authentik_token_identifier:
+        if user.token_expires_at and user.token_expires_at > datetime.utcnow():
             print("🔄 Clearing token metadata...")
             await UserService.clear_token_metadata(db, user.id)
             print("✅ Token metadata cleared")
