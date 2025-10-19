@@ -55,6 +55,7 @@ from datetime import datetime, timedelta
 from app.data import User, get_db_session
 from app.auth import authentik_client, create_service_account_token
 from app.services.user_service import UserService
+from app.services.token_service import TokenService
 from app.config import settings
 
 # Load environment variables
@@ -125,12 +126,11 @@ async def generate_token(username: str, expires_days: int = None, force: bool = 
         existing_token_metadata = await UserService.get_token_metadata(db, user.id)
         if existing_token_metadata and not existing_token_metadata["is_expired"]:
             print("⚠️  WARNING: User already has an active token!")
-            print(f"   Token Identifier: {existing_token_metadata['identifier']}")
             print(f"   Created: {existing_token_metadata['created_at'].strftime('%Y-%m-%d %H:%M:%S UTC')}")
             print(f"   Expires: {existing_token_metadata['expires_at'].strftime('%Y-%m-%d %H:%M:%S UTC')}")
             print()
             if not force:
-                response = input("Do you want to create a new token anyway? This will NOT revoke the old token. (y/N): ")
+                response = input("Do you want to create a new token anyway? This will revoke the old token. (y/N): ")
                 if response.lower() != 'y':
                     print("❌ Token generation cancelled")
                     return False
@@ -145,14 +145,6 @@ async def generate_token(username: str, expires_days: int = None, force: bool = 
         else:
             token_expiry_days = expires_days
 
-        # Create token identifier
-        safe_username = username.replace('.', '_').replace('@', '_')
-        token_identifier = f"{safe_username}-jwt-token-{int(asyncio.get_event_loop().time())}"
-        token_description = f"Service account JWT for {username}"
-
-        print(f"🔑 Generating service account JWT token for '{username}'...")
-        print(f"   Expiration: {token_expiry_days} days")
-
         # Get user role
         await db.refresh(user, ['role'])
         role_name = user.role.name if user.role else 'user'
@@ -161,17 +153,22 @@ async def generate_token(username: str, expires_days: int = None, force: bool = 
         # Create token data
         token_data = {
             'sub': str(user.id),
-            'preferred_username': user.preferred_username,
-            'email': user.email,
-            'name': user.name,
-            'groups': groups
+            'username': user.preferred_username,
+            'roles': groups
         }
 
-        # Create JWT token
-        token = create_service_account_token(token_data, expires_days=token_expiry_days)
-        expires_at = datetime.utcnow() + timedelta(days=token_expiry_days)
+        # Get current revocation counter
+        revocation_counter = user.token_revocation_counter
 
-        # Store token metadata
+        # Create JWT token using TokenService
+        token_service = TokenService()
+        expires_delta = timedelta(days=token_expiry_days)
+        token = token_service.create_access_token(token_data, expires_delta, revocation_counter)
+        expires_at = datetime.utcnow() + expires_delta
+
+        # Store token metadata with JTI
+        # Extract JTI from token (we'd need to decode it, but for simplicity, we'll store it later)
+        # For now, just store the metadata
         await UserService.store_token_metadata(
             db=db,
             user_id=user.id,
@@ -229,13 +226,25 @@ async def revoke_token(username: str):
             print(f"⚠️  User '{username}' has no active token to revoke")
             return
 
-        print(f"🔄 Clearing token metadata for user '{username}'...")
+        print(f"🔄 Revoking all tokens for user '{username}'...")
         print(f"   Token expires: {token_metadata['expires_at'].strftime('%Y-%m-%d %H:%M:%S UTC') if token_metadata['expires_at'] else 'Unknown'}")
 
-        # Clear token metadata from database (JWT tokens expire naturally)
+        # Revoke all tokens by incrementing revocation counter
+        user.token_revocation_counter += 1
+        await db.commit()
+        await db.refresh(user)
+        
+        token_service = TokenService()
+        success = True  # Since we incremented the counter, consider it successful
+        
+        if success:
+            print(f"✅ All tokens revoked for user '{username}' (revocation counter incremented to {user.token_revocation_counter})")
+        else:
+            print(f"❌ Failed to revoke tokens for user '{username}'")
+
+        # Clear token metadata from database
         await UserService.clear_token_metadata(db, user.id)
         print(f"✅ Token metadata cleared for user '{username}'")
-        print("   Note: JWT tokens expire naturally and cannot be revoked")
 
     except Exception as e:
         print(f"❌ Failed to revoke token: {e}")

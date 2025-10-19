@@ -52,6 +52,15 @@ class Settings(BaseSettings):
     service_account_jwt_secret: str = "change-this-secret-key-in-production"  # Secret key for signing service account JWTs
     service_account_jwt_algorithm: str = "HS256"  # Algorithm for service account JWTs
 
+    # Redis Configuration (for token blacklist)
+    redis_url: str = "redis://localhost:6379/0"  # Redis connection URL
+    redis_token_db: int = 1  # Redis database number for token operations
+    redis_token_ttl: int = 31536000  # Token blacklist TTL in seconds (1 year)
+    redis_host: str = "localhost"
+    redis_port: int = 6379
+    redis_db: int = 1
+    redis_password: str = ""
+
     # Test token for API verification
     test_token: str = ""
 

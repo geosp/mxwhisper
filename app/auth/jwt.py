@@ -201,22 +201,20 @@ def create_service_account_token(user_data: dict, expires_days: int = 365) -> st
     Returns:
         JWT token string
     """
-    to_encode = user_data.copy()
+    from app.services.token_service import TokenService
 
-    # Add expiration
-    expire = datetime.utcnow() + timedelta(days=expires_days)
-    to_encode.update({
-        "exp": expire,
-        "iat": datetime.utcnow(),
-        "token_type": "service_account"  # Mark as service account token
-    })
+    token_service = TokenService()
 
-    # Sign with service account secret
-    encoded_jwt = jwt.encode(
-        to_encode,
-        settings.service_account_jwt_secret,
-        algorithm=settings.service_account_jwt_algorithm
-    )
+    # Prepare token data
+    token_data = {
+        "sub": user_data.get("sub"),
+        "username": user_data.get("preferred_username", user_data.get("username")),
+        "roles": user_data.get("groups", [])
+    }
+
+    # Create token with JTI using TokenService
+    expires_delta = timedelta(days=expires_days)
+    token = token_service.create_access_token(token_data, expires_delta)
 
     logger.info("Service account token created", extra={
         "sub": user_data.get("sub"),
@@ -224,7 +222,7 @@ def create_service_account_token(user_data: dict, expires_days: int = 365) -> st
         "expires_days": expires_days
     })
 
-    return encoded_jwt
+    return token
 
 
 async def verify_service_account_token(token: str) -> Optional[Dict[str, Any]]:
@@ -233,40 +231,34 @@ async def verify_service_account_token(token: str) -> Optional[Dict[str, Any]]:
 
     These are self-signed JWTs for API access without OAuth2.
     """
-    try:
-        payload = jwt.decode(
-            token,
-            settings.service_account_jwt_secret,
-            algorithms=[settings.service_account_jwt_algorithm]
-        )
+    from app.services.token_service import TokenService
 
-        # Check if token is expired
-        exp = payload.get("exp")
-        if exp and datetime.utcfromtimestamp(exp) < datetime.utcnow():
-            logger.warning("Service account token expired", extra={
-                "exp": exp,
-                "current_time": datetime.utcnow().timestamp()
-            })
-            return None
+    token_service = TokenService()
 
-        # Check if it's a service account token
-        if payload.get("token_type") != "service_account":
-            logger.warning("Token is not a service account token")
-            return None
+    # Use TokenService to verify token (includes Redis blacklist check)
+    token_data = token_service.verify_token(token)
 
-        logger.info("Service account token verified successfully", extra={
-            "sub": payload.get("sub"),
-            "username": payload.get("preferred_username")
-        })
-
-        return payload
-
-    except JWTError as e:
-        logger.debug("Service account token validation failed", extra={
-            "error": str(e),
-            "error_type": type(e).__name__
-        })
+    if not token_data:
+        logger.debug("Service account token validation failed or token revoked")
         return None
+
+    # Convert TokenData back to dict format for compatibility
+    payload = {
+        "sub": token_data.user_id,
+        "username": token_data.username,
+        "roles": token_data.roles,
+        "exp": token_data.exp.timestamp(),
+        "iat": token_data.iat.timestamp(),
+        "jti": token_data.jti,
+        "token_type": "service_account"
+    }
+
+    logger.info("Service account token verified successfully", extra={
+        "sub": payload.get("sub"),
+        "username": payload.get("username")
+    })
+
+    return payload
 
 
 async def verify_token_with_fallback(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:

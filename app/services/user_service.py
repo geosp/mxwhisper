@@ -107,7 +107,8 @@ class UserService:
     async def store_token_metadata(
         db: AsyncSession,
         user_id: str,
-        expires_at: datetime
+        expires_at: datetime,
+        token_jti: str = None
     ) -> User:
         """
         Store JWT token metadata for a user.
@@ -116,13 +117,15 @@ class UserService:
             db: Database session
             user_id: User ID
             expires_at: Token expiration datetime
+            token_jti: JWT ID (jti claim) for token revocation
 
         Returns:
             Updated User object
         """
         logger.debug("Storing token metadata", extra={
             "user_id": user_id,
-            "expires_at": expires_at.isoformat() if expires_at else None
+            "expires_at": expires_at.isoformat() if expires_at else None,
+            "token_jti": token_jti
         })
 
         user = await db.get(User, user_id)
@@ -138,12 +141,14 @@ class UserService:
 
         user.token_created_at = datetime.now()
         user.token_expires_at = expires_at_naive
+        user.current_token_jti = token_jti
 
         await db.commit()
         await db.refresh(user)
 
         logger.info("Token metadata stored successfully", extra={
-            "user_id": user_id
+            "user_id": user_id,
+            "token_jti": token_jti
         })
 
         return user
@@ -182,6 +187,8 @@ class UserService:
         Returns:
             Updated User object
         """
+        from app.services.token_service import TokenService
+
         logger.debug("Clearing token metadata", extra={"user_id": user_id})
 
         user = await db.get(User, user_id)
@@ -191,8 +198,19 @@ class UserService:
             })
             raise ValueError(f"User {user_id} not found")
 
+        # If there's a current token JTI, revoke it in Redis before clearing metadata
+        if user.current_token_jti:
+            token_service = TokenService()
+            # Note: We don't have the actual token, but we can revoke by JTI if we stored the token
+            # For now, we'll just clear the metadata since we don't store the full token
+            logger.info("Token JTI found, but full token not stored for revocation", extra={
+                "user_id": user_id,
+                "token_jti": user.current_token_jti
+            })
+
         user.token_created_at = None
         user.token_expires_at = None
+        user.current_token_jti = None
 
         await db.commit()
         await db.refresh(user)

@@ -34,6 +34,8 @@ class User(Base):
     # Authentik token metadata for service accounts
     token_created_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)  # When token was issued
     token_expires_at: Mapped[Optional[DateTime]] = mapped_column(DateTime, nullable=True)  # When token expires
+    current_token_jti: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)  # Current active token JTI for revocation
+    token_revocation_counter: Mapped[int] = mapped_column(Integer, default=0)  # Counter for token revocation
 
     created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
