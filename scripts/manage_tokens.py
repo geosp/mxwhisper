@@ -42,6 +42,7 @@ Examples:
 import asyncio
 import argparse
 import sys
+import logging
 from pathlib import Path
 from datetime import datetime
 
@@ -60,6 +61,8 @@ from app.config import settings
 
 # Load environment variables
 load_dotenv()
+
+logger = logging.getLogger(__name__)
 
 
 async def list_tokens():
@@ -166,13 +169,28 @@ async def generate_token(username: str, expires_days: int = None, force: bool = 
         token = token_service.create_access_token(token_data, expires_delta, revocation_counter)
         expires_at = datetime.utcnow() + expires_delta
 
+        # Extract JTI from the generated token
+        import base64
+        import json
+        token_jti = None
+        try:
+            parts = token.split('.')
+            if len(parts) == 3:
+                payload_b64 = parts[1]
+                payload_b64 += '=' * (4 - len(payload_b64) % 4)
+                payload_bytes = base64.urlsafe_b64decode(payload_b64)
+                payload_str = payload_bytes.decode('utf-8')
+                payload = json.loads(payload_str)
+                token_jti = payload.get('jti')
+        except Exception as e:
+            logger.warning(f"Failed to extract JTI from token: {e}")
+
         # Store token metadata with JTI
-        # Extract JTI from token (we'd need to decode it, but for simplicity, we'll store it later)
-        # For now, just store the metadata
         await UserService.store_token_metadata(
             db=db,
             user_id=user.id,
-            expires_at=expires_at
+            expires_at=expires_at,
+            token_jti=token_jti
         )
 
         print()

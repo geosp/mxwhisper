@@ -39,9 +39,13 @@ Examples:
     uv run python scripts/manage_users.py update john.doe --role admin
 """
 
+import os
+os.environ['SQLALCHEMY_WARN_20'] = '0'  # Disable SQLAlchemy 2.0 warnings
+
 import asyncio
 import argparse
 import sys
+import logging
 from pathlib import Path
 from datetime import datetime, timedelta
 
@@ -157,10 +161,6 @@ async def create_user(username: str, email: str, name: str = None, role: str = "
 
         # Step 2: Create user in our database
         print("💾 Creating user in database...")
-        db = await get_db_session()
-
-        # Ensure roles exist
-        await UserService.initialize_roles(db)
 
         # Map user data to our database format
         db_user_data = {

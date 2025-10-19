@@ -7,7 +7,8 @@ from app.config import settings
 from .models import Base
 
 DATABASE_URL = settings.database_url
-engine = create_async_engine(DATABASE_URL, echo=True)
+# Disable SQL echo for management scripts - set to False to reduce noise
+engine = create_async_engine(DATABASE_URL, echo=False)
 async_session = async_sessionmaker(engine, expire_on_commit=False)
 
 
