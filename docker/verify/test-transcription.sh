@@ -42,15 +42,20 @@ show_usage() {
     echo "  audio_file_path    Path to the audio file to transcribe"
     echo ""
     echo "Options:"
-    echo "  -u, --url URL     API base URL (default: $API_BASE_URL)"
-    echo "  -t, --token TOKEN Authentication token (if required)"
-    echo "  -w, --wait SEC    Wait time between status checks (default: 5)"
-    echo "  -h, --help        Show this help message"
+    echo "  -u, --url URL          API base URL (default: $API_BASE_URL)"
+    echo "  -t, --token TOKEN      Authentication token (if required)"
+    echo "  -w, --wait SEC         Wait time between status checks (default: 5)"
+    echo "  -c, --collection NAME  Create/use collection and add job to it"
+    echo "  -p, --position NUM     Position in collection (default: auto)"
+    echo "  --topic-ids IDS        Comma-separated topic IDs to assign (e.g., 1,2,3)"
+    echo "  -h, --help             Show this help message"
     echo ""
     echo "Examples:"
     echo "  $0 audio.mp3"
     echo "  $0 audio.wav --url http://my-api.com --token abc123"
     echo "  $0 /path/to/audio.m4a --wait 10"
+    echo "  $0 sermon.mp3 --collection \"Sunday Sermons\" --topic-ids 2,6"
+    echo "  $0 chapter1.mp3 --collection \"Bible Study Book\" --position 1"
 }
 
 # Try to load token from .env file if not set
@@ -72,6 +77,9 @@ fi
 # Parse arguments
 AUDIO_FILE=""
 WAIT_TIME=5
+COLLECTION_NAME=""
+COLLECTION_POSITION=""
+TOPIC_IDS=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
@@ -85,6 +93,18 @@ while [[ $# -gt 0 ]]; do
             ;;
         -w|--wait)
             WAIT_TIME="$2"
+            shift 2
+            ;;
+        -c|--collection)
+            COLLECTION_NAME="$2"
+            shift 2
+            ;;
+        -p|--position)
+            COLLECTION_POSITION="$2"
+            shift 2
+            ;;
+        --topic-ids)
+            TOPIC_IDS="$2"
             shift 2
             ;;
         -h|--help)
@@ -131,6 +151,9 @@ log_info "Starting transcription test"
 log_info "API URL: $API_BASE_URL"
 log_info "Audio file: $AUDIO_FILE"
 log_info "Wait time: ${WAIT_TIME}s"
+[[ -n "$COLLECTION_NAME" ]] && log_info "Collection: $COLLECTION_NAME"
+[[ -n "$COLLECTION_POSITION" ]] && log_info "Position: $COLLECTION_POSITION"
+[[ -n "$TOPIC_IDS" ]] && log_info "Topic IDs: $TOPIC_IDS"
 
 # Step 1: Upload the file
 log_info "Uploading audio file..."
@@ -234,5 +257,102 @@ echo "=================="
 OUTPUT_FILE="${AUDIO_FILE%.*}_transcript.srt"
 echo "$TRANSCRIPT_RESPONSE" > "$OUTPUT_FILE"
 log_info "Transcript also saved to: $OUTPUT_FILE"
+
+# Step 4: Assign topics (if specified)
+if [[ -n "$TOPIC_IDS" ]]; then
+    log_info "Assigning topics to job..."
+
+    # Convert comma-separated IDs to JSON array
+    IFS=',' read -ra TOPIC_ARRAY <<< "$TOPIC_IDS"
+    TOPIC_JSON="["
+    for i in "${!TOPIC_ARRAY[@]}"; do
+        if [ $i -gt 0 ]; then
+            TOPIC_JSON+=","
+        fi
+        TOPIC_JSON+="${TOPIC_ARRAY[$i]}"
+    done
+    TOPIC_JSON+="]"
+
+    ASSIGN_RESPONSE=$(curl -s -X POST \
+        "${CURL_HEADERS[@]}" \
+        -H "Content-Type: application/json" \
+        -d "{\"topic_ids\": $TOPIC_JSON}" \
+        "$API_BASE_URL/jobs/$JOB_ID/topics" 2>/dev/null)
+
+    if [[ $? -eq 0 ]]; then
+        ASSIGNED_COUNT=$(echo "$ASSIGN_RESPONSE" | grep -o '"assigned_topics"' | wc -l)
+        if [[ $ASSIGNED_COUNT -gt 0 ]]; then
+            log_success "Topics assigned successfully!"
+        else
+            log_warning "Topic assignment may have failed"
+            log_warning "Response: $ASSIGN_RESPONSE"
+        fi
+    else
+        log_warning "Failed to assign topics"
+    fi
+fi
+
+# Step 5: Add to collection (if specified)
+if [[ -n "$COLLECTION_NAME" ]]; then
+    log_info "Managing collection..."
+
+    # First, try to find existing collection with this name
+    COLLECTIONS_RESPONSE=$(curl -s "${CURL_HEADERS[@]}" "$API_BASE_URL/collections" 2>/dev/null)
+    COLLECTION_ID=$(echo "$COLLECTIONS_RESPONSE" | grep -B2 "\"name\": *\"$COLLECTION_NAME\"" | grep -o '"id": *[0-9]*' | head -1 | sed 's/.*: *//')
+
+    # If collection doesn't exist, create it
+    if [[ -z "$COLLECTION_ID" ]]; then
+        log_info "Creating new collection: $COLLECTION_NAME"
+
+        CREATE_RESPONSE=$(curl -s -X POST \
+            "${CURL_HEADERS[@]}" \
+            -H "Content-Type: application/json" \
+            -d "{\"name\": \"$COLLECTION_NAME\", \"description\": \"Created by test script\", \"is_public\": false}" \
+            "$API_BASE_URL/collections" 2>/dev/null)
+
+        COLLECTION_ID=$(echo "$CREATE_RESPONSE" | grep -o '"id": *[0-9]*' | head -1 | sed 's/.*: *//')
+
+        if [[ -n "$COLLECTION_ID" ]]; then
+            log_success "Collection created with ID: $COLLECTION_ID"
+        else
+            log_error "Failed to create collection"
+            log_error "Response: $CREATE_RESPONSE"
+            COLLECTION_ID=""
+        fi
+    else
+        log_info "Using existing collection ID: $COLLECTION_ID"
+    fi
+
+    # Add job to collection
+    if [[ -n "$COLLECTION_ID" ]]; then
+        log_info "Adding job to collection..."
+
+        # Build request JSON
+        if [[ -n "$COLLECTION_POSITION" ]]; then
+            REQUEST_JSON="{\"collection_id\": $COLLECTION_ID, \"position\": $COLLECTION_POSITION}"
+        else
+            REQUEST_JSON="{\"collection_id\": $COLLECTION_ID}"
+        fi
+
+        ADD_RESPONSE=$(curl -s -X POST \
+            "${CURL_HEADERS[@]}" \
+            -H "Content-Type: application/json" \
+            -d "$REQUEST_JSON" \
+            "$API_BASE_URL/jobs/$JOB_ID/collections" 2>/dev/null)
+
+        if [[ $? -eq 0 ]]; then
+            ADDED_COLLECTION=$(echo "$ADD_RESPONSE" | grep -o '"collection_id"' | wc -l)
+            if [[ $ADDED_COLLECTION -gt 0 ]]; then
+                POSITION=$(echo "$ADD_RESPONSE" | grep -o '"position": *[0-9]*' | sed 's/.*: *//')
+                log_success "Job added to collection at position: ${POSITION:-auto}"
+            else
+                log_warning "Failed to add job to collection"
+                log_warning "Response: $ADD_RESPONSE"
+            fi
+        else
+            log_warning "Failed to add job to collection"
+        fi
+    fi
+fi
 
 log_success "Transcription test completed successfully!"

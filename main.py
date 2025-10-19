@@ -13,6 +13,7 @@ from app.services import JobService, UserService, create_user_in_authentik_and_d
 from app.services.websocket_manager import active_connections, send_job_update
 from app.services.embedding_service import generate_embedding
 from app.utils.srt import generate_srt
+from app.routers import topics_router, collections_router, job_topics_router, job_collections_router
 
 # Setup logging
 setup_logging(level="INFO", format_type="text", log_file="logs/mxwhisper.log")
@@ -55,6 +56,12 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*", "Authorization"],
 )
+
+# Include routers for Phase 2 API endpoints
+app.include_router(topics_router)
+app.include_router(collections_router)
+app.include_router(job_topics_router)
+app.include_router(job_collections_router)
 
 @app.post("/upload")
 async def upload_file(file: UploadFile = File(...), db: AsyncSession = Depends(get_db), token_payload: dict = Depends(verify_token)):
