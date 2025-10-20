@@ -1,119 +1,162 @@
 """
-Transcribe activity - Whisper audio transcription.
-
-This activity handles audio transcription using Whisper and stores the results.
-It does NOT generate embeddings - that's handled by the embed activity.
+Transcribe activity - Updated for media sourcing architecture.
+Works with AudioFile and Transcription models instead of Job.
 """
 
 import json
 import logging
-from temporalio import activity
+from typing import Dict, Any
 
-from app.data import Job, get_db_session
+from temporalio import activity
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
+
+from app.config import settings
+from app.data.models import Job, AudioFile, Transcription
+from app.services.transcription_service import TranscriptionService
 from app.services.websocket_manager import send_job_update
 from ..services.whisper_service import transcribe_audio
-from .models import TranscriptionSummary
 
 logger = logging.getLogger(__name__)
 
 
 @activity.defn
-async def transcribe_activity(job_id: int) -> TranscriptionSummary:
+async def transcribe_activity(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
     Transcribe audio file using Whisper.
 
     This activity:
-    1. Loads the job from database
+    1. Loads the transcription and audio file from database
     2. Transcribes the audio using Whisper
-    3. Stores transcript and segments
+    3. Updates Transcription record with results
     4. Returns a lightweight summary
 
     Args:
-        job_id: ID of the job to transcribe
+        input_data: Dictionary with:
+            - transcription_id: int - Transcription ID
+            - job_id: int - Job ID for tracking
 
     Returns:
-        TranscriptionSummary with basic metadata
+        Dictionary with transcription results
     """
-    logger.info("Starting transcription activity", extra={"job_id": job_id})
+    transcription_id = input_data["transcription_id"]
+    job_id = input_data["job_id"]
+
+    activity.logger.info(f"Starting transcription activity", extra={
+        "transcription_id": transcription_id,
+        "job_id": job_id
+    })
 
     # Send initial heartbeat
     activity.heartbeat("Initializing transcription")
 
-    session = await get_db_session()
-    async with session:
-        # Load job
-        job = await session.get(Job, job_id)
-        if not job:
-            logger.error("Job not found for transcription", extra={"job_id": job_id})
-            raise ValueError(f"Job {job_id} not found")
+    engine = create_async_engine(settings.database_url)
+    async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
-        logger.info("Job found, updating status to processing", extra={
-            "job_id": job.id,
-            "audio_filename": job.filename,
-            "current_status": job.status
-        })
+    try:
+        async with async_session_maker() as session:
+            # Load transcription and audio file
+            transcription = await session.get(Transcription, transcription_id)
+            if not transcription:
+                raise ValueError(f"Transcription {transcription_id} not found")
 
-        # Update status
-        job.status = "processing"
-        await session.commit()
-        await send_job_update(job.id, job.status)
+            audio_file = await session.get(AudioFile, transcription.audio_file_id)
+            if not audio_file:
+                raise ValueError(f"AudioFile {transcription.audio_file_id} not found")
 
-        try:
-            # Transcribe the audio file
-            result = await transcribe_audio(job.file_path, job_id=job.id)
+            # Update job status
+            job = await session.get(Job, job_id)
+            if job:
+                job.status = "processing"
+                await session.commit()
+                await send_job_update(job.id, job.status)
 
-            # Store transcript and segments
-            job.transcript = result["text"]
-            segments = result.get("segments", [])
-            job.segments = json.dumps(segments)
+            # Update transcription status
+            transcription.status = "processing"
+            await session.commit()
 
-            # Note: We do NOT generate embeddings here anymore
-            # That's handled by the embed_chunks_activity
-
-            logger.info("Transcription completed successfully", extra={
-                "job_id": job.id,
-                "transcript_length": len(result["text"]),
-                "segment_count": len(segments),
-                "language": result.get("language")
+            activity.logger.info(f"Transcribing audio file", extra={
+                "transcription_id": transcription.id,
+                "audio_file_id": audio_file.id,
+                "file_path": audio_file.file_path,
+                "original_filename": audio_file.original_filename
             })
 
-            # Create lightweight summary for Temporal return value
-            summary = TranscriptionSummary(
-                job_id=job.id,
-                success=True,
-                segment_count=len(segments),
-                character_count=len(result["text"]),
-                language=result.get("language"),
-                duration=segments[-1]["end"] if segments else None
+            # Transcribe the audio file
+            result = await transcribe_audio(
+                audio_file.file_path,
+                job_id=job_id  # For heartbeat tracking
             )
 
-            # Commit changes
-            await session.commit()
+            # Update transcription with results
+            transcript_text = result["text"]
+            segments = result.get("segments", [])
+            language = result.get("language", "unknown")
 
-            # Send WebSocket update (status still "processing" - chunking/embedding next)
-            await send_job_update(
-                job.id,
-                "processing",
-                progress=60  # Transcription is ~60% of total work
+            # Calculate average confidence
+            confidences = [seg.get("confidence", 0.0) for seg in segments if "confidence" in seg]
+            avg_confidence = sum(confidences) / len(confidences) if confidences else None
+
+            # Get processing time from result
+            processing_time = result.get("processing_time")
+
+            # Update transcription using service
+            await TranscriptionService.update_transcription_result(
+                db=session,
+                transcription_id=transcription.id,
+                transcript=transcript_text,
+                language=language,
+                avg_confidence=avg_confidence if avg_confidence else 0.0,
+                segments=segments,
+                processing_time=processing_time
             )
 
-            return summary
-
-        except Exception as e:
-            logger.error("Transcription failed", extra={
+            activity.logger.info(f"Transcription completed successfully", extra={
+                "transcription_id": transcription.id,
                 "job_id": job_id,
-                "error": str(e),
-                "audio_path": job.file_path
-            }, exc_info=True)
+                "transcript_length": len(transcript_text),
+                "segment_count": len(segments),
+                "language": language
+            })
 
-            # Update job status to failed
-            job.status = "failed"
-            await session.commit()
+            # Send WebSocket update
+            if job:
+                await send_job_update(
+                    job.id,
+                    "processing",
+                    progress=60  # Transcription is ~60% of total work
+                )
 
-            # Send error update via WebSocket
-            await send_job_update(job_id, "failed", error=str(e))
+            return {
+                "transcription_id": transcription.id,
+                "success": True,
+                "segment_count": len(segments),
+                "character_count": len(transcript_text),
+                "language": language,
+                "segments": segments  # For chunking activity
+            }
 
-            # Send final heartbeat with error
-            activity.heartbeat(f"Transcription failed: {str(e)}")
+    except Exception as e:
+        activity.logger.error(f"Transcription failed", extra={
+            "transcription_id": transcription_id,
+            "job_id": job_id,
+            "error": str(e)
+        }, exc_info=True)
 
-            raise
+        # Mark transcription as failed
+        async with async_session_maker() as session:
+            await TranscriptionService.mark_as_failed(
+                db=session,
+                transcription_id=transcription_id,
+                error_message=str(e)
+            )
+
+            # Update job status
+            job = await session.get(Job, job_id)
+            if job:
+                job.status = "failed"
+                await session.commit()
+
+        raise
+
+    finally:
+        await engine.dispose()

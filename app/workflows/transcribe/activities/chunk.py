@@ -1,275 +1,231 @@
 """
-Chunk activity - Topic-based semantic chunking using Ollama.
-
-This activity analyzes transcripts to identify topic boundaries and creates
-semantically coherent chunks for better search relevance.
+Chunk activity - Updated for media sourcing architecture.
+Works with Transcription and TranscriptionChunk models.
 """
 
 import logging
-from typing import List, Dict, Any, Optional
+from typing import Dict, Any, List
+
 from temporalio import activity
-import httpx
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from app.config import settings
+from app.data.models import Job, Transcription, TranscriptionChunk
+from app.services.transcription_service import TranscriptionService
+from app.services.websocket_manager import send_job_update
 from ..services.ollama_service import OllamaChunker
-from ..utils.heartbeat import ProgressTracker, HeartbeatPacemaker
-from .models import ChunkingInput, ChunkingResult, ChunkMetadata
+from ..utils.heartbeat import ProgressTracker
 
 logger = logging.getLogger(__name__)
 
 
 @activity.defn
-async def chunk_with_ollama_activity(chunking_input: ChunkingInput) -> ChunkingResult:
+async def chunk_with_ollama_activity(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Analyze transcript and create topic-based semantic chunks using Ollama.
+    Create semantic chunks using Ollama .
 
     This activity:
-    1. Uses Ollama LLM to identify topic boundaries in the transcript
-    2. Creates chunks aligned with semantic/topic shifts
-    3. Maps chunks to Whisper segments for timestamp information
-    4. Falls back to sentence-based chunking if Ollama fails
+    1. Loads transcription from database
+    2. Analyzes transcript with Ollama for topic-based chunking
+    3. Creates TranscriptionChunk records
+    4. Returns summary
 
     Args:
-        chunking_input: Contains job_id, transcript, and segments
+        input_data: Dictionary with:
+            - transcription_id: int - Transcription ID
+            - job_id: int - Job ID for tracking
+            - segments: List[Dict] - Whisper segments (passed from transcribe activity)
 
     Returns:
-        ChunkingResult with chunks and metadata
+        Dictionary with chunking results
     """
-    job_id = chunking_input.job_id
+    transcription_id = input_data["transcription_id"]
+    job_id = input_data["job_id"]
 
-    # Fetch transcript and segments from DB if not provided
-    # This avoids passing large payloads through Temporal
-    if chunking_input.transcript is None or chunking_input.segments is None:
-        from app.data import Job, get_db_session
-        import json
+    activity.heartbeat("Analyzing transcript for chunking")
 
-        session = await get_db_session()
-        async with session:
-            job = await session.get(Job, job_id)
-            if not job:
-                raise ValueError(f"Job {job_id} not found")
-
-            transcript = job.transcript or ""
-            segments = json.loads(job.segments) if job.segments else []
-    else:
-        transcript = chunking_input.transcript
-        segments = chunking_input.segments
-
-    logger.info("Starting chunking activity", extra={
-        "job_id": job_id,
-        "transcript_length": len(transcript),
-        "segment_count": len(segments)
-    })
-
-    # Check if chunking is enabled
-    if not settings.enable_semantic_chunking:
-        logger.info("Semantic chunking disabled, creating single chunk", extra={
-            "job_id": job_id
-        })
-        return await _create_single_chunk(job_id, transcript, segments)
-
-    # Create progress tracker for heartbeats
-    progress = ProgressTracker(total=100, job_id=job_id)
-    progress.update(5, "Initializing chunking")
+    engine = create_async_engine(settings.database_url)
+    async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
-        # Initialize Ollama chunker
-        chunker = OllamaChunker()
+        async with async_session_maker() as session:
+            # Load transcription
+            transcription = await session.get(Transcription, transcription_id)
+            if not transcription:
+                raise ValueError(f"Transcription {transcription_id} not found")
 
-        # Quick health check - try to connect to Ollama
-        health_check_passed = await _check_ollama_health(chunker)
-        if not health_check_passed:
-            logger.warning("Ollama health check failed, falling back to sentence chunking", extra={
-                "job_id": job_id
+            transcript = transcription.transcript
+
+            # Load segments from transcription
+
+            segments = transcription.segments if transcription.segments else []
+
+            activity.logger.info(f"Loaded transcript", extra={
+                "transcription_id": transcription.id,
+                "transcript_length": len(transcript)
             })
-            return await _create_sentence_chunks(job_id, transcript, segments, progress)
 
-        async with HeartbeatPacemaker("Analyzing topics with Ollama", interval=10):
-            # Perform topic-based chunking
-            chunks = await chunker.chunk_by_topics(
-                transcript=transcript,
-                segments=segments,
-                progress=progress
+            # Analyze with Ollama if enabled
+            if settings.enable_semantic_chunking and settings.chunking_strategy == "ollama":
+                activity.logger.info("Using Ollama for semantic chunking")
+
+                try:
+                    # Create progress tracker for heartbeats
+                    progress = ProgressTracker(total=100)
+
+                    # Use OllamaChunker for topic-based chunking
+                    chunker = OllamaChunker()
+                    chunk_metadata_list = await chunker.chunk_by_topics(
+                        transcript=transcript,
+                        segments=segments,
+                        progress=progress
+                    )
+
+                    # Convert ChunkMetadata to dict format for service
+                    chunks = [
+                        {
+                            "text": chunk.text,
+                            "start_time": chunk.start_time,
+                            "end_time": chunk.end_time,
+                            "start_char_pos": chunk.start_char_pos,
+                            "end_char_pos": chunk.end_char_pos,
+                            "topic_summary": chunk.topic_summary,
+                            "keywords": chunk.keywords,
+                            "confidence": chunk.confidence
+                        }
+                        for chunk in chunk_metadata_list
+                    ]
+                    chunking_method = "ollama"
+                except Exception as ollama_error:
+                    activity.logger.error(
+                        f"Ollama chunking failed with details",
+                        extra={
+                            "error": str(ollama_error),
+                            "error_type": type(ollama_error).__name__,
+                            "transcript_length": len(transcript),
+                            "segment_count": len(segments)
+                        },
+                        exc_info=True
+                    )
+                    activity.logger.warning(
+                        f"Ollama chunking failed, falling back to simple chunking",
+                        extra={"error": str(ollama_error)}
+                    )
+                    chunks = _simple_chunk_transcript(transcript, segments)
+                    chunking_method = "simple_fallback"
+            else:
+                activity.logger.info("Using simple chunking strategy")
+                chunks = _simple_chunk_transcript(transcript, segments)
+                chunking_method = "simple"
+
+            activity.logger.info(f"Chunking analysis completed", extra={
+                "transcription_id": transcription.id,
+                "chunk_count": len(chunks),
+                "chunking_method": chunking_method
+            })
+
+            # Create TranscriptionChunk records
+            chunks_data = []
+            for i, chunk in enumerate(chunks):
+                chunk_data = {
+                    "chunk_index": i,
+                    "text": chunk.get("text", ""),
+                    "start_time": chunk.get("start_time"),
+                    "end_time": chunk.get("end_time"),
+                    "start_char_pos": chunk.get("start_char_pos"),
+                    "end_char_pos": chunk.get("end_char_pos"),
+                    "topic_summary": chunk.get("topic_summary"),
+                    "keywords": chunk.get("keywords"),
+                    "confidence": chunk.get("confidence")
+                }
+                chunks_data.append(chunk_data)
+
+            # Save chunks using service
+            await TranscriptionService.create_chunks(
+                db=session,
+                transcription_id=transcription.id,
+                chunks_data=chunks_data
             )
 
-        progress.update(50, f"Successfully created {len(chunks)} semantic chunks")
+            activity.logger.info(f"Chunks saved to database", extra={
+                "transcription_id": transcription.id,
+                "chunk_count": len(chunks)
+            })
 
-        # Save chunks to database (without embeddings - those come later)
-        await _save_chunks_to_db(job_id, chunks, progress)
+            # Send WebSocket update
+            job = await session.get(Job, job_id)
+            if job:
+                await send_job_update(
+                    job.id,
+                    "processing",
+                    progress=80  # Chunking complete, embedding next
+                )
 
-        logger.info("Chunking completed successfully", extra={
-            "job_id": job_id,
-            "chunk_count": len(chunks),
-            "chunking_method": "ollama"
-        })
-
-        return ChunkingResult(
-            job_id=job_id,
-            success=True,
-            chunk_count=len(chunks),
-            chunks=chunks,
-            chunking_method="ollama"
-        )
+            return {
+                "transcription_id": transcription.id,
+                "success": True,
+                "chunk_count": len(chunks),
+                "chunking_method": chunking_method
+            }
 
     except Exception as e:
-        logger.error("Chunking activity failed", extra={
+        activity.logger.error(f"Chunking failed", extra={
+            "transcription_id": transcription_id,
             "job_id": job_id,
             "error": str(e)
         }, exc_info=True)
-
-        # Note: OllamaChunker already has fallback logic internally,
-        # so this error means even the fallback failed
-        activity.heartbeat(f"Chunking failed: {str(e)}")
         raise
 
+    finally:
+        await engine.dispose()
 
-async def _create_single_chunk(job_id: int, transcript: str, segments: List[Dict[str, Any]]) -> ChunkingResult:
+
+def _simple_chunk_transcript(transcript: str, segments: List[Dict]) -> List[Dict]:
     """
-    Create a single chunk from the entire transcript (no chunking).
+    Fallback simple chunking based on character count.
 
-    Used when semantic chunking is disabled or for very short transcripts.
+    Args:
+        transcript: Full transcript text
+        segments: Whisper segments
+
+    Returns:
+        List of chunk dictionaries
     """
-    # Get timestamps from first and last segments
-    start_time = None
-    end_time = None
-    if segments:
-        start_time = segments[0].get("start", 0.0)
-        end_time = segments[-1].get("end", 0.0)
+    chunks = []
+    chunk_size = 500  # characters
+    chunk_overlap = 50  # characters
 
-    chunk = ChunkMetadata(
-        chunk_index=0,
-        text=transcript,
-        topic_summary=None,  # No topic analysis
-        keywords=None,
-        confidence=None,
-        start_char_pos=0,
-        end_char_pos=len(transcript),
-        start_time=start_time,
-        end_time=end_time,
-    )
+    start_pos = 0
+    chunk_index = 0
 
-    # Save chunk to database
-    await _save_chunks_to_db(job_id, [chunk])
+    while start_pos < len(transcript):
+        end_pos = min(start_pos + chunk_size, len(transcript))
 
-    return ChunkingResult(
-        job_id=job_id,
-        success=True,
-        chunk_count=1,
-        chunks=[chunk],
-        chunking_method="single"
-    )
+        # Try to break at sentence boundary
+        if end_pos < len(transcript):
+            # Look for sentence ending
+            for delimiter in ['. ', '! ', '? ', '\n']:
+                last_delimiter = transcript[start_pos:end_pos].rfind(delimiter)
+                if last_delimiter > chunk_size // 2:  # Don't break too early
+                    end_pos = start_pos + last_delimiter + len(delimiter)
+                    break
 
+        chunk_text = transcript[start_pos:end_pos].strip()
 
-async def _check_ollama_health(chunker: OllamaChunker) -> bool:
-    """
-    Quick health check for LLM service (Ollama, vLLM, or OpenAI-compatible).
+        if chunk_text:
+            chunks.append({
+                "text": chunk_text,
+                "start_char_pos": start_pos,
+                "end_char_pos": end_pos,
+                "start_time": None,  # Simple chunking doesn't have timing
+                "end_time": None
+            })
+            chunk_index += 1
 
-    Returns True if the service is responsive, False otherwise.
-    """
-    try:
-        # Try a simple request to check if the LLM service is available
-        timeout = httpx.Timeout(connect=5.0, read=10.0, write=5.0, pool=5.0)
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            # Try OpenAI-compatible endpoint first (works with vLLM, Ollama, etc.)
-            response = await client.get(f"{chunker.base_url}/v1/models")
-            if response.status_code == 200:
-                return True
+        # Move to next chunk with overlap
+        start_pos = end_pos - chunk_overlap
+        if start_pos >= len(transcript) - chunk_overlap:
+            break
 
-            # Fallback to Ollama-specific endpoint for older Ollama versions
-            response = await client.get(f"{chunker.base_url}/api/tags")
-            return response.status_code == 200
-    except Exception as e:
-        logger.warning(f"LLM service health check failed: {e}")
-        return False
-
-
-async def _create_sentence_chunks(job_id: int, transcript: str, segments: List[Dict[str, Any]], progress: ProgressTracker) -> ChunkingResult:
-    """
-    Create sentence-based chunks from the transcript.
-
-    Used as a fallback when semantic chunking is disabled or fails.
-    """
-    logger.info("Creating sentence-based chunks", extra={
-        "job_id": job_id
-    })
-
-    # Split transcript into sentences using Whisper segments
-    sentences = []
-    for segment in segments:
-        start = segment.get("start", 0.0)
-        end = segment.get("end", 0.0)
-        text = segment.get("text", "").strip()
-
-        if text:
-            sentences.append(ChunkMetadata(
-                chunk_index=len(sentences),
-                text=text,
-                topic_summary=None,  # No topic analysis
-                keywords=None,
-                confidence=None,
-                start_char_pos=0,
-                end_char_pos=len(text),
-                start_time=start,
-                end_time=end,
-            ))
-
-    progress.update(50, f"Successfully created {len(sentences)} sentence chunks")
-
-    # Save chunks to database
-    await _save_chunks_to_db(job_id, sentences, progress)
-
-    return ChunkingResult(
-        job_id=job_id,
-        success=True,
-        chunk_count=len(sentences),
-        chunks=sentences,
-        chunking_method="sentence"
-    )
-
-
-async def _save_chunks_to_db(
-    job_id: int,
-    chunks: List[ChunkMetadata],
-    progress: Optional[ProgressTracker] = None
-) -> None:
-    """
-    Save chunks to the database without embeddings.
-
-    Embeddings will be added later by the embed activity.
-    This avoids passing large chunk data through Temporal event history.
-    """
-    from app.data import JobChunk, get_db_session
-
-    if progress:
-        progress.update(5, f"Saving {len(chunks)} chunks to database")
-
-    session = await get_db_session()
-    async with session:
-        # Delete existing chunks for this job (in case of retry)
-        await session.execute(
-            JobChunk.__table__.delete().where(JobChunk.job_id == job_id)
-        )
-
-        # Create new chunk records without embeddings
-        for chunk in chunks:
-            job_chunk = JobChunk(
-                job_id=job_id,
-                chunk_index=chunk.chunk_index,
-                text=chunk.text,
-                topic_summary=chunk.topic_summary,
-                keywords=chunk.keywords,
-                confidence=chunk.confidence,
-                start_time=chunk.start_time,
-                end_time=chunk.end_time,
-                start_char_pos=chunk.start_char_pos,
-                end_char_pos=chunk.end_char_pos,
-                embedding=None  # Will be set by embed activity
-            )
-            session.add(job_chunk)
-
-        await session.commit()
-
-        logger.info(f"Saved {len(chunks)} chunks to database for job {job_id}")
-
-        if progress:
-            progress.update(5, f"Saved {len(chunks)} chunks to database")
+    return chunks

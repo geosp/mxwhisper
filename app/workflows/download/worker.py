@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Temporal Worker for MxWhisper transcription tasks
+Temporal Worker for MxWhisper download tasks
 """
 import asyncio
 import logging
@@ -10,25 +10,20 @@ from temporalio.worker.workflow_sandbox import SandboxedWorkflowRunner, SandboxR
 
 from app.config import settings
 from app.logging_config import setup_logging
-from app.workflows.transcribe.activities import (
-    transcribe_activity,
-    chunk_with_ollama_activity,
-    embed_chunks_activity,
-)
-from app.workflows.transcribe.activities.topic_assignment import assign_topics_activity
-from app.workflows.transcribe.workflow import TranscribeWorkflow
+from app.workflows.download.activities.download import download_audio_activity
+from app.workflows.download.workflow import DownloadAudioWorkflow
 
 # Setup logging
-setup_logging(level="INFO", format_type="text", log_file="logs/mxwhisper-worker.log")
+setup_logging(level="INFO", format_type="text", log_file="logs/mxwhisper-download-worker.log")
 
 logger = logging.getLogger(__name__)
 
 async def run_worker():
-    """Run the Temporal worker for transcription tasks."""
-    logger.info("Starting Temporal worker", extra={
+    """Run the Temporal worker for download tasks."""
+    logger.info("Starting Temporal download worker", extra={
         "temporal_host": settings.temporal_host,
         "namespace": "default",
-        "task_queue": "transcribe"
+        "task_queue": "download"
     })
 
     client = await Client.connect(settings.temporal_host, namespace="default")
@@ -44,11 +39,13 @@ async def run_worker():
             "app.data.models",
             "app.data.database",
             "app.services",
-            "app.services.transcription_service",
             "app.services.audio_file_service",
             "app.services.download_service",
-            "app.services.embedding_service",
             "app.services.websocket_manager",
+            "app.services.transcription_service",
+            "app.services.embedding_service",
+            "app.workflows.transcribe",
+            "app.workflows.transcribe.activities",
             "app.workflows.transcribe.services",
             "app.workflows.transcribe.services.whisper_service",
             "app.workflows.transcribe.services.ollama_service",
@@ -60,6 +57,7 @@ async def run_worker():
             "pgvector",
             "redis",
             "httpx",
+            "yt_dlp",
             "whisper",
             "torch",
             "sentence_transformers",
@@ -70,18 +68,15 @@ async def run_worker():
 
     worker = Worker(
         client,
-        task_queue="transcribe",
-        workflows=[TranscribeWorkflow],
+        task_queue="download",
+        workflows=[DownloadAudioWorkflow],
         activities=[
-            transcribe_activity,
-            chunk_with_ollama_activity,
-            embed_chunks_activity,
-            assign_topics_activity,  # Register topic assignment activity
+            download_audio_activity,
         ],
         workflow_runner=workflow_runner,
     )
 
-    logger.info("Worker started! Listening for transcription tasks...")
+    logger.info("Download worker started! Listening for download tasks...")
     await worker.run()
 
 def main():

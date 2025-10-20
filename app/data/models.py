@@ -4,7 +4,7 @@ SQLAlchemy models for MxWhisper
 from datetime import datetime
 from typing import Optional, List
 
-from sqlalchemy import DateTime, String, Text, func, ForeignKey, Float, Integer, ARRAY, Boolean, UniqueConstraint
+from sqlalchemy import DateTime, String, Text, func, ForeignKey, Float, Integer, ARRAY, Boolean, UniqueConstraint, BigInteger
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 from pgvector.sqlalchemy import Vector
 
@@ -54,35 +54,18 @@ class Job(Base):
     file_path: Mapped[str] = mapped_column(String(500))
     status: Mapped[str] = mapped_column(String(50), default="pending")  # pending, processing, completed, failed
     transcript: Mapped[Optional[Text]] = mapped_column(Text, nullable=True)
-    segments: Mapped[Optional[Text]] = mapped_column(Text, nullable=True)  # JSON string of segments with timestamps
     embedding: Mapped[Optional[Vector]] = mapped_column(Vector(384), nullable=True)  # Semantic embedding for search (384-dim) - deprecated, use chunks
+
+    # New columns for job type polymorphism
+    job_type: Mapped[str] = mapped_column(String(50), nullable=False, default="transcription")  # 'download' | 'transcription'
+    audio_file_id: Mapped[Optional[int]] = mapped_column(ForeignKey("audio_files.id", ondelete="SET NULL"), nullable=True)  # For transcription jobs
+    source_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)  # For download jobs
+
     created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
     updated_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
     user: Mapped["User"] = relationship()
-    chunks: Mapped[List["JobChunk"]] = relationship(back_populates="job", cascade="all, delete-orphan")
-    job_topics: Mapped[List["JobTopic"]] = relationship(back_populates="job", cascade="all, delete-orphan")
-    job_collections: Mapped[List["JobCollection"]] = relationship(back_populates="job", cascade="all, delete-orphan")
-
-
-class JobChunk(Base):
-    __tablename__ = "job_chunks"
-
-    id: Mapped[int] = mapped_column(primary_key=True)
-    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
-    text: Mapped[str] = mapped_column(Text, nullable=False)
-    topic_summary: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
-    keywords: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String), nullable=True)
-    confidence: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    start_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    end_time: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
-    start_char_pos: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    end_char_pos: Mapped[Optional[int]] = mapped_column(Integer, nullable=True)
-    embedding: Mapped[Optional[Vector]] = mapped_column(Vector(384), nullable=True)
-    created_at: Mapped[DateTime] = mapped_column(DateTime, default=func.now())
-
-    job: Mapped["Job"] = relationship(back_populates="chunks")
+    audio_file: Mapped[Optional["AudioFile"]] = relationship(back_populates="jobs")
 
 
 class Topic(Base):
@@ -101,7 +84,6 @@ class Topic(Base):
 
     # Relationships
     parent: Mapped[Optional["Topic"]] = relationship("Topic", remote_side=[id], backref="children")
-    job_topics: Mapped[List["JobTopic"]] = relationship(back_populates="topic", cascade="all, delete-orphan")
 
 
 class Collection(Base):
@@ -122,54 +104,180 @@ class Collection(Base):
 
     # Relationships
     user: Mapped["User"] = relationship(back_populates="collections")
-    job_collections: Mapped[List["JobCollection"]] = relationship(back_populates="collection", cascade="all, delete-orphan")
 
 
-class JobTopic(Base):
+class AudioFile(Base):
     """
-    Junction table linking jobs to topics with AI confidence tracking.
-    Supports both AI-assigned and user-assigned categorization.
+    Stores all media files with ownership, checksums, and source information.
+    Supports deduplication via SHA256 checksums.
     """
-    __tablename__ = "job_topics"
+    __tablename__ = "audio_files"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="CASCADE"), nullable=False)
-    ai_confidence: Mapped[Optional[float]] = mapped_column(Float)  # AI confidence score (0.0-1.0)
-    ai_reasoning: Mapped[Optional[str]] = mapped_column(Text)  # Why AI assigned this topic
-    assigned_by: Mapped[Optional[str]] = mapped_column(String(255), ForeignKey("users.id"))  # NULL if AI-assigned
-    user_reviewed: Mapped[bool] = mapped_column(Boolean, default=False)
+    user_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # File storage
+    file_path: Mapped[str] = mapped_column(String(1000), nullable=False)  # uploads/user_30/2025/10/checksum_file.mp3
+    original_filename: Mapped[str] = mapped_column(String(500), nullable=False)
+    file_size: Mapped[int] = mapped_column(BigInteger, nullable=False)  # Bytes
+    mime_type: Mapped[Optional[str]] = mapped_column(String(100))  # audio/mpeg, audio/wav, etc.
+    duration: Mapped[Optional[float]] = mapped_column(Float)  # Seconds
+
+    # Deduplication
+    checksum: Mapped[str] = mapped_column(String(64), nullable=False)  # SHA256 hash
+
+    # Source tracking
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False)  # 'upload' | 'download'
+    source_url: Mapped[Optional[str]] = mapped_column(Text)  # Original URL if downloaded
+    source_platform: Mapped[Optional[str]] = mapped_column(String(100))  # 'youtube', 'soundcloud', etc.
+
+    # Metadata
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
 
     # Relationships
-    job: Mapped["Job"] = relationship(back_populates="job_topics")
-    topic: Mapped["Topic"] = relationship(back_populates="job_topics")
-    assigner: Mapped[Optional["User"]] = relationship()
+    user: Mapped["User"] = relationship()
+    transcriptions: Mapped[List["Transcription"]] = relationship(back_populates="audio_file", cascade="all, delete-orphan")
+    jobs: Mapped[List["Job"]] = relationship(back_populates="audio_file")
 
     __table_args__ = (
-        UniqueConstraint('job_id', 'topic_id', name='uq_job_topic'),
+        UniqueConstraint('user_id', 'checksum', name='uq_user_checksum'),
     )
 
 
-class JobCollection(Base):
+class Transcription(Base):
     """
-    Junction table linking jobs to collections with position ordering.
-    Allows jobs to be organized sequentially within collections (e.g., book chapters, course lessons).
+    Domain entity representing transcription results (decoupled from job orchestration).
+    Each transcription belongs to an audio file and can have multiple chunks.
     """
-    __tablename__ = "job_collections"
+    __tablename__ = "transcriptions"
 
     id: Mapped[int] = mapped_column(primary_key=True)
-    job_id: Mapped[int] = mapped_column(ForeignKey("jobs.id", ondelete="CASCADE"), nullable=False)
-    collection_id: Mapped[int] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"), nullable=False)
-    position: Mapped[Optional[int]] = mapped_column(Integer)  # Order within collection (for chapters, episodes)
-    assigned_by: Mapped[Optional[str]] = mapped_column(String(255), ForeignKey("users.id"))
+    audio_file_id: Mapped[int] = mapped_column(ForeignKey("audio_files.id", ondelete="CASCADE"), nullable=False)
+    user_id: Mapped[str] = mapped_column(String(255), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+
+    # Transcription content
+    transcript: Mapped[str] = mapped_column(Text, nullable=False)  # Full plaintext transcript
+    from sqlalchemy.dialects.postgresql import JSONB
+    segments: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)  # Whisper segments as JSONB
+    language: Mapped[Optional[str]] = mapped_column(String(10))  # Detected/specified language code
+
+    # Model information
+    model_name: Mapped[Optional[str]] = mapped_column(String(100))  # 'whisper-large-v3', etc.
+    model_version: Mapped[Optional[str]] = mapped_column(String(50))
+
+    # Quality metrics
+    avg_confidence: Mapped[Optional[float]] = mapped_column(Float)  # Average confidence across segments
+    processing_time: Mapped[Optional[float]] = mapped_column(Float)  # Seconds taken to transcribe
+
+    # Status tracking
+    status: Mapped[str] = mapped_column(String(50), nullable=False, default="pending")  # 'pending' | 'processing' | 'completed' | 'failed'
+    error_message: Mapped[Optional[str]] = mapped_column(Text)  # If status = 'failed'
+
+    # Metadata
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(DateTime, default=func.now(), onupdate=func.now())
+
+    # Relationships
+    audio_file: Mapped["AudioFile"] = relationship(back_populates="transcriptions")
+    user: Mapped["User"] = relationship()
+    chunks: Mapped[List["TranscriptionChunk"]] = relationship(back_populates="transcription", cascade="all, delete-orphan")
+    transcription_topics: Mapped[List["TranscriptionTopic"]] = relationship(back_populates="transcription", cascade="all, delete-orphan")
+    transcription_collections: Mapped[List["TranscriptionCollection"]] = relationship(back_populates="transcription", cascade="all, delete-orphan")
+
+
+class TranscriptionChunk(Base):
+    """
+    Stores segments with embeddings for semantic search.
+    Replaces JobChunk for new transcription workflow.
+    """
+    __tablename__ = "transcription_chunks"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transcription_id: Mapped[int] = mapped_column(ForeignKey("transcriptions.id", ondelete="CASCADE"), nullable=False)
+
+    # Chunk content
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)  # Sequential order within transcription
+    text: Mapped[str] = mapped_column(Text, nullable=False)
+
+    # Topic analysis (optional, for AI integration)
+    topic_summary: Mapped[Optional[str]] = mapped_column(Text)  # AI-generated topic summary
+    keywords: Mapped[Optional[List[str]]] = mapped_column(ARRAY(String))  # Extracted keywords
+    confidence: Mapped[Optional[float]] = mapped_column(Float)  # AI confidence score
+
+    # Temporal alignment
+    start_time: Mapped[Optional[float]] = mapped_column(Float)  # Seconds from start
+    end_time: Mapped[Optional[float]] = mapped_column(Float)  # Seconds from start
+
+    # Character positions (for text highlighting)
+    start_char_pos: Mapped[Optional[int]] = mapped_column(Integer)
+    end_char_pos: Mapped[Optional[int]] = mapped_column(Integer)
+
+    # Semantic search
+    embedding: Mapped[Optional[Vector]] = mapped_column(Vector(384))  # pgvector embedding
+
     created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
 
     # Relationships
-    job: Mapped["Job"] = relationship(back_populates="job_collections")
-    collection: Mapped["Collection"] = relationship(back_populates="job_collections")
+    transcription: Mapped["Transcription"] = relationship(back_populates="chunks")
+
+    __table_args__ = (
+        UniqueConstraint('transcription_id', 'chunk_index', name='uq_transcription_chunk'),
+    )
+
+
+class TranscriptionTopic(Base):
+    """
+    Junction table linking transcriptions to topics (replaces job_topics for new workflow).
+    Supports both AI-assigned and user-assigned categorization.
+    """
+    __tablename__ = "transcription_topics"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transcription_id: Mapped[int] = mapped_column(ForeignKey("transcriptions.id", ondelete="CASCADE"), nullable=False)
+    topic_id: Mapped[int] = mapped_column(ForeignKey("topics.id", ondelete="CASCADE"), nullable=False)
+
+    # AI assignment tracking
+    ai_confidence: Mapped[Optional[float]] = mapped_column(Float)  # AI confidence score (0.0-1.0)
+    ai_reasoning: Mapped[Optional[str]] = mapped_column(Text)  # Why AI assigned this topic
+
+    # User assignment tracking
+    assigned_by: Mapped[Optional[str]] = mapped_column(String(255), ForeignKey("users.id"))  # NULL if AI-assigned
+    user_reviewed: Mapped[bool] = mapped_column(Boolean, default=False)  # User confirmed/rejected
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    # Relationships
+    transcription: Mapped["Transcription"] = relationship(back_populates="transcription_topics")
+    topic: Mapped["Topic"] = relationship()
     assigner: Mapped[Optional["User"]] = relationship()
 
     __table_args__ = (
-        UniqueConstraint('job_id', 'collection_id', name='uq_job_collection'),
+        UniqueConstraint('transcription_id', 'topic_id', name='uq_transcription_topic'),
+    )
+
+
+class TranscriptionCollection(Base):
+    """
+    Junction table linking transcriptions to collections (replaces job_collections for new workflow).
+    Allows transcriptions to be organized sequentially within collections.
+    """
+    __tablename__ = "transcription_collections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    transcription_id: Mapped[int] = mapped_column(ForeignKey("transcriptions.id", ondelete="CASCADE"), nullable=False)
+    collection_id: Mapped[int] = mapped_column(ForeignKey("collections.id", ondelete="CASCADE"), nullable=False)
+
+    position: Mapped[Optional[int]] = mapped_column(Integer)  # Order within collection
+    assigned_by: Mapped[Optional[str]] = mapped_column(String(255), ForeignKey("users.id"))  # Who added to collection
+
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=func.now())
+
+    # Relationships
+    transcription: Mapped["Transcription"] = relationship(back_populates="transcription_collections")
+    collection: Mapped["Collection"] = relationship()
+    assigner: Mapped[Optional["User"]] = relationship()
+
+    __table_args__ = (
+        UniqueConstraint('transcription_id', 'collection_id', name='uq_transcription_collection'),
     )

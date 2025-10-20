@@ -29,6 +29,29 @@ from .job_collections import (
     AddToCollectionRequest,
     UpdatePositionRequest,
 )
+from .audio_files import (
+    AudioFileDownloadRequest,
+    AudioFileResponse,
+    AudioFileUploadResponse,
+    AudioFileListResponse,
+    AudioFileDetailResponse,
+    AudioFileDeleteResponse,
+)
+from .transcriptions import (
+    TranscribeRequest,
+    AssignTopicsToTranscriptionRequest,
+    AddTranscriptionToCollectionRequest,
+    TranscriptionChunkResponse,
+    TranscriptionTopicResponse,
+    TranscriptionCollectionResponse,
+    AudioFileSummaryResponse,
+    TranscriptionSummaryResponse,
+    TranscriptionResponse,
+    TranscriptionDetailResponse,
+    TranscriptionListResponse,
+    TranscriptionCreateResponse,
+    TranscriptionDeleteResponse,
+)
 
 __all__ = [
     # Topics
@@ -55,4 +78,25 @@ __all__ = [
     "JobCollectionListResponse",
     "AddToCollectionRequest",
     "UpdatePositionRequest",
+    # Audio Files
+    "AudioFileDownloadRequest",
+    "AudioFileResponse",
+    "AudioFileUploadResponse",
+    "AudioFileListResponse",
+    "AudioFileDetailResponse",
+    "AudioFileDeleteResponse",
+    # Transcriptions
+    "TranscribeRequest",
+    "AssignTopicsToTranscriptionRequest",
+    "AddTranscriptionToCollectionRequest",
+    "TranscriptionChunkResponse",
+    "TranscriptionTopicResponse",
+    "TranscriptionCollectionResponse",
+    "AudioFileSummaryResponse",
+    "TranscriptionSummaryResponse",
+    "TranscriptionResponse",
+    "TranscriptionDetailResponse",
+    "TranscriptionListResponse",
+    "TranscriptionCreateResponse",
+    "TranscriptionDeleteResponse",
 ]

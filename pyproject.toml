@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "aiofiles>=24.1.0",
     "alembic>=1.17.0",
     "asyncpg>=0.30.0",
     "authentik-client==2024.8.2.post1726491842",
@@ -18,11 +19,13 @@ dependencies = [
     "python-json-logger>=2.0.0",
     "python-multipart>=0.0.20",
     "redis>=5.0.0",
+    "rich>=13.9.4",
     "sentence-transformers>=3.3.1",
     "sqlalchemy>=2.0.44",
     "temporalio>=1.18.1",
     "tenacity>=8.2.0",
     "uvicorn>=0.37.0",
+    "yt-dlp>=2024.12.13",
 ]
 
 [build-system]
@@ -58,3 +61,4 @@ asyncio_mode = "auto"
 [project.scripts]
 mxwhisper = "app.cli:main"
 mxwhisper-worker = "app.workflows.transcribe.worker:main"
+mxwhisper-download-worker = "app.workflows.download.worker:main"

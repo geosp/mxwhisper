@@ -1,34 +1,47 @@
+"""
+TranscribeWorkflow Updated for media sourcing architecture.
+Works with AudioFile and Transcription models.
+"""
 from datetime import timedelta
 import logging
+from typing import Dict, Any
 
 from temporalio import workflow
 from temporalio.common import RetryPolicy
 
 logger = logging.getLogger(__name__)
 
-# Don't import activities here to avoid heavy dependencies in workflow validation
-# Use string names for activity execution instead
-
 
 @workflow.defn
 class TranscribeWorkflow:
+    """
+    Workflow for transcribing audio files (new architecture).
+    Works with pre-existing AudioFile and creates Transcription record.
+    """
+
     @workflow.run
-    async def run(self, job_id: int) -> dict:
+    async def run(self, input_data: Dict[str, Any]) -> Dict[str, Any]:
         """
         Run complete transcription workflow with semantic chunking.
 
         Workflow steps:
-        1. Transcribe audio with Whisper
-        2. Analyze transcript and create semantic chunks (Ollama)
+        1. Transcribe audio with Whisper → update Transcription
+        2. Analyze transcript and create semantic chunks → create TranscriptionChunks
         3. Generate and store embeddings for chunks
 
         Args:
-            job_id: ID of the job to process
+            input_data: Dictionary with:
+                - transcription_id: int - Transcription ID (already created)
+                - job_id: int - Job ID for tracking
 
         Returns:
             dict: Minimal summary (chunk_count, success) to avoid event history bloat
         """
-        logger.info("Starting transcription workflow", extra={
+        transcription_id = input_data["transcription_id"]
+        job_id = input_data["job_id"]
+
+        logger.info("Starting transcription workflow ", extra={
+            "transcription_id": transcription_id,
             "job_id": job_id,
             "workflow_id": workflow.info().workflow_id,
             "run_id": workflow.info().run_id
@@ -36,26 +49,33 @@ class TranscribeWorkflow:
 
         try:
             # Step 1: Transcribe audio with Whisper
-            logger.info("Step 1: Transcribing audio", extra={"job_id": job_id})
+            logger.info("Step 1: Transcribing audio", extra={
+                "transcription_id": transcription_id,
+                "job_id": job_id
+            })
+
             transcription_result = await workflow.execute_activity(
                 "transcribe_activity",
-                job_id,
+                input_data,
                 start_to_close_timeout=timedelta(hours=1),
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
 
             logger.info("Transcription completed", extra={
-                "job_id": job_id,
+                "transcription_id": transcription_id,
                 "character_count": transcription_result.get("character_count"),
-                "segment_count": transcription_result.get("segment_count")
+                "segment_count": transcription_result.get("segment_count"),
+                "language": transcription_result.get("language")
             })
 
-            # Step 2: Create semantic chunks (Ollama topic analysis)
-            logger.info("Step 2: Creating semantic chunks", extra={"job_id": job_id})
+            # Step 2: Create semantic chunks
+            logger.info("Step 2: Creating semantic chunks", extra={
+                "transcription_id": transcription_id
+            })
 
-            # Pass only job_id - the activity will fetch transcript/segments from DB
-            # This avoids passing large payloads through Temporal
+            # Pass transcription_id
             chunking_input = {
+                "transcription_id": transcription_id,
                 "job_id": job_id
             }
 
@@ -63,21 +83,50 @@ class TranscribeWorkflow:
                 "chunk_with_ollama_activity",
                 chunking_input,
                 start_to_close_timeout=timedelta(minutes=30),
-                retry_policy=RetryPolicy(maximum_attempts=2),  # Less retries (expensive)
+                retry_policy=RetryPolicy(maximum_attempts=2),
             )
 
             logger.info("Chunking completed", extra={
-                "job_id": job_id,
+                "transcription_id": transcription_id,
                 "chunk_count": chunking_result.get("chunk_count"),
                 "chunking_method": chunking_result.get("chunking_method")
             })
 
-            # Step 3: Generate and store embeddings for chunks
-            logger.info("Step 3: Generating embeddings", extra={"job_id": job_id})
 
-            # Pass only job_id - the activity will load chunks from DB
-            # This avoids passing large chunk data through Temporal event history
+            # Step 3: Assign topics to transcription
+            logger.info("Step 3: Assigning topics to transcription", extra={
+                "transcription_id": transcription_id
+            })
+
+            # You may need to pass user_id; for now, try to get it from input_data
+            user_id = input_data.get("user_id")
+            if not user_id:
+                logger.warning("No user_id provided in input_data; topic assignment may fail.")
+
+            topic_assignment_input = {
+                "transcription_id": transcription_id,
+                "user_id": user_id or "system"
+            }
+
+            topic_assignment_result = await workflow.execute_activity(
+                "assign_topics_activity",
+                topic_assignment_input,
+                start_to_close_timeout=timedelta(minutes=10),
+                retry_policy=RetryPolicy(maximum_attempts=2),
+            )
+
+            logger.info("Topic assignment completed", extra={
+                "transcription_id": transcription_id,
+                "assigned_topic_ids": topic_assignment_result.get("assigned_topic_ids")
+            })
+
+            # Step 4: Generate and store embeddings
+            logger.info("Step 4: Generating embeddings", extra={
+                "transcription_id": transcription_id
+            })
+
             embedding_input = {
+                "transcription_id": transcription_id,
                 "job_id": job_id
             }
 
@@ -88,23 +137,27 @@ class TranscribeWorkflow:
                 retry_policy=RetryPolicy(maximum_attempts=3),
             )
 
-            logger.info("Workflow completed successfully", extra={
+            logger.info("Workflow completed successfully ", extra={
+                "transcription_id": transcription_id,
                 "job_id": job_id,
                 "workflow_id": workflow.info().workflow_id,
                 "chunk_count": chunking_result.get("chunk_count"),
                 "embedding_count": embedding_result.get("embedding_count")
             })
 
-            # Return minimal summary (avoid event history bloat)
+            # Return minimal summary
             return {
+                "transcription_id": transcription_id,
                 "job_id": job_id,
                 "success": True,
                 "chunk_count": chunking_result.get("chunk_count", 0),
-                "chunking_method": chunking_result.get("chunking_method", "unknown")
+                "chunking_method": chunking_result.get("chunking_method", "unknown"),
+                "embedding_count": embedding_result.get("embedding_count", 0)
             }
 
         except Exception as e:
-            logger.error("Transcription workflow failed", extra={
+            logger.error("Transcription workflow failed ", extra={
+                "transcription_id": transcription_id,
                 "job_id": job_id,
                 "workflow_id": workflow.info().workflow_id,
                 "error": str(e),

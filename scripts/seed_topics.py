@@ -47,6 +47,11 @@ from sqlalchemy.exc import IntegrityError
 
 # Initial topic hierarchy
 INITIAL_TOPICS = [
+    {
+        "name": "Unknown",
+        "description": "Default topic for unclassified or unmatched content",
+        "parent": None,
+    },
     # Root categories (no parent)
     {
         "name": "Religious",

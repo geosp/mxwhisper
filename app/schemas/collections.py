@@ -39,11 +39,11 @@ class CollectionResponse(CollectionBase):
         from_attributes = True
 
 
-class JobInCollection(BaseModel):
-    """Schema for a job within a collection"""
-    job_id: int
+class TranscriptionInCollection(BaseModel):
+    """Schema for a transcription within a collection"""
+    transcription_id: int
     position: Optional[int] = Field(None, description="Position/order within collection")
-    filename: str
+    language: Optional[str]
     created_at: datetime
 
     class Config:
@@ -51,10 +51,10 @@ class JobInCollection(BaseModel):
 
 
 class CollectionDetailResponse(CollectionBase):
-    """Schema for detailed collection response with jobs"""
+    """Schema for detailed collection response with transcriptions"""
     id: int
     user_id: str
-    jobs: List[JobInCollection] = Field(default_factory=list, description="Jobs in this collection")
+    transcriptions: List[TranscriptionInCollection] = Field(default_factory=list, description="Transcriptions in this collection")
     created_at: datetime
     updated_at: datetime
 

@@ -1,134 +1,133 @@
 """
-Embed activity - Generate and store embeddings for chunks.
-
-This activity generates semantic embeddings for all chunks and stores them
-in the database for fast similarity search.
+Embed activity - Updated for media sourcing architecture.
+Works with TranscriptionChunk models.
 """
 
 import logging
+from typing import Dict, Any
+
 from temporalio import activity
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
-from app.data import JobChunk, get_db_session
-from app.services.embedding_service import generate_embeddings_batch
+from app.config import settings
+from app.data.models import Job, Transcription, TranscriptionChunk
+from app.services.embedding_service import generate_embedding, generate_embeddings_batch
 from app.services.websocket_manager import send_job_update
-from ..utils.heartbeat import ProgressTracker
-from .models import EmbeddingInput, EmbeddingResult
 
 logger = logging.getLogger(__name__)
 
 
 @activity.defn
-async def embed_chunks_activity(embedding_input: EmbeddingInput) -> EmbeddingResult:
+async def embed_chunks_activity(input_data: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Generate embeddings for chunks and store in database.
+    Generate and store embeddings for transcription chunks .
 
     This activity:
-    1. Loads chunks from database (saved by chunk activity)
-    2. Generates embeddings for all chunks in batch (efficient)
-    3. Updates chunks with embeddings in job_chunks table
-    4. Updates job status to completed
-    5. Sends final WebSocket notification
+    1. Loads TranscriptionChunk records from database
+    2. Generates embeddings for each chunk's text
+    3. Stores embeddings in the chunks
+    4. Returns summary
 
     Args:
-        embedding_input: Contains job_id (chunks loaded from DB)
+        input_data: Dictionary with:
+            - transcription_id: int - Transcription ID
+            - job_id: int - Job ID for tracking
 
     Returns:
-        EmbeddingResult with success status and counts
+        Dictionary with embedding results
     """
-    job_id = embedding_input.job_id
+    transcription_id = input_data["transcription_id"]
+    job_id = input_data["job_id"]
 
-    logger.info("Starting embedding activity", extra={
+    activity.logger.info(f"Starting embedding activity ", extra={
+        "transcription_id": transcription_id,
         "job_id": job_id
     })
 
-    # Create progress tracker
-    progress = ProgressTracker(total=100, job_id=job_id)
-    progress.update(10, "Loading chunks from database")
+    activity.heartbeat("Loading chunks for embedding")
+
+    engine = create_async_engine(settings.database_url)
+    async_session_maker = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
     try:
-        # Load chunks from database (saved by chunk activity)
-        session = await get_db_session()
-        async with session:
-            # Query chunks for this job, ordered by chunk_index
-            select_stmt = select(JobChunk).where(
-                JobChunk.job_id == job_id
-            ).order_by(JobChunk.chunk_index)
-            result = await session.execute(select_stmt)
+        async with async_session_maker() as session:
+            # Load all chunks for this transcription
+            result = await session.execute(
+                select(TranscriptionChunk)
+                .where(TranscriptionChunk.transcription_id == transcription_id)
+                .order_by(TranscriptionChunk.chunk_index)
+            )
             chunks = result.scalars().all()
 
             if not chunks:
-                raise ValueError(f"No chunks found in database for job {job_id}")
+                activity.logger.warning(f"No chunks found for transcription", extra={
+                    "transcription_id": transcription_id
+                })
+                return {
+                    "transcription_id": transcription_id,
+                    "success": True,
+                    "embedding_count": 0
+                }
 
-            logger.info(f"Loaded {len(chunks)} chunks from database", extra={
-                "job_id": job_id,
+            activity.logger.info(f"Loaded chunks", extra={
+                "transcription_id": transcription_id,
                 "chunk_count": len(chunks)
             })
 
-            # Extract text from all chunks for batch processing
+            # Extract texts for embedding
             chunk_texts = [chunk.text for chunk in chunks]
 
-            # Generate embeddings in batch (much faster than one-by-one)
-            progress.update(10, f"Generating embeddings for {len(chunks)} chunks")
+            # Send heartbeat before potentially long operation
+            activity.heartbeat(f"Generating embeddings for {len(chunks)} chunks")
+
+            # Generate embeddings
+            activity.logger.info(f"Generating embeddings for {len(chunks)} chunks")
             embeddings = generate_embeddings_batch(chunk_texts)
 
-            progress.update(30, "Embeddings generated, updating database")
-
-            # Update chunks with embeddings
-            for chunk, embedding in zip(chunks, embeddings):
+            # Store embeddings in chunks
+            for i, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
                 chunk.embedding = embedding
 
-            progress.update(20, "Saving embeddings to database")
+                # Send periodic heartbeat for large batches
+                if i > 0 and i % 10 == 0:
+                    activity.heartbeat(f"Stored {i}/{len(chunks)} embeddings")
+
             await session.commit()
 
+            activity.logger.info(f"Embeddings stored successfully", extra={
+                "transcription_id": transcription_id,
+                "embedding_count": len(embeddings)
+            })
+
             # Update job status to completed
-            from app.data import Job
             job = await session.get(Job, job_id)
             if job:
                 job.status = "completed"
                 await session.commit()
+                await send_job_update(job.id, "completed", progress=100)
 
-            progress.update(20, "Job completed successfully")
-
-        logger.info("Embedding activity completed successfully", extra={
-            "job_id": job_id,
-            "chunk_count": len(chunks),
-            "embedding_count": len(embeddings)
-        })
-
-        # Send final WebSocket notification
-        await send_job_update(
-            job_id,
-            "completed",
-            progress=100
-        )
-
-        return EmbeddingResult(
-            job_id=job_id,
-            success=True,
-            chunk_count=len(chunks),
-            embedding_count=len(embeddings)
-        )
+            return {
+                "transcription_id": transcription_id,
+                "success": True,
+                "embedding_count": len(embeddings)
+            }
 
     except Exception as e:
-        logger.error("Embedding activity failed", extra={
+        activity.logger.error(f"Embedding failed", extra={
+            "transcription_id": transcription_id,
             "job_id": job_id,
             "error": str(e)
         }, exc_info=True)
 
         # Update job status to failed
-        session = await get_db_session()
-        async with session:
-            from app.data import Job
+        async with async_session_maker() as session:
             job = await session.get(Job, job_id)
             if job:
                 job.status = "failed"
                 await session.commit()
 
-        # Send error notification
-        await send_job_update(job_id, "failed", error=str(e))
-
-        # Send heartbeat with error
-        activity.heartbeat(f"Embedding failed: {str(e)}")
-
         raise
+
+    finally:
+        await engine.dispose()
